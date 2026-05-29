@@ -534,44 +534,170 @@ function totals(){
 function calcForecast(target){
   var now=new Date(),tgt=new Date(target+'T12:00:00');
   if(!target||tgt<=now)return null;
-  var dl=Math.ceil((tgt-now)/86400000),days=dpm(now);
-  var bal=app.data.accounts.reduce(function(s,a){return s+toBase(+a.balance||0,a.currency);},0);
-  bal-=app.data.cards.reduce(function(s,c){return s+toBase(+c.outstanding||0,c.currency);},0);
+  var dl=Math.ceil((tgt-now)/86400000);
+  var cur=app.data.settings.currency||'AED';
+
+  // Track A: Account balance (raw cash in accounts)
+  var accBal=app.data.accounts.reduce(function(s,a){return s+toBase(+a.balance||0,a.currency);},0);
+  // Track B: Liquid = accounts - card outstanding (true net position)
+  var liqBal=accBal-app.data.cards.reduce(function(s,c){return s+toBase(+c.outstanding||0,c.currency);},0);
+
+  // Income: credit both tracks
   app.data.income.filter(function(i){return i.recurring;}).forEach(function(i){
     var a=toBase(+i.amount||0,i.currency);
-    if(i.freq==='monthly')bal+=a*Math.ceil(dl/30);
-    else if(i.freq==='weekly')bal+=a*Math.floor(dl/7);
+    var add=i.freq==='monthly'?a*Math.ceil(dl/30):i.freq==='weekly'?a*Math.floor(dl/7):0;
+    accBal+=add;liqBal+=add;
   });
+
+  // Expenses: only account-paid reduce accBal; all reduce liqBal (card charges already in outstanding)
   app.data.expenses.forEach(function(e){
     var a=toBase(+e.amount||0,e.currency);
-    if(e.type==='daily'&&!e.date)bal-=a*dl; // skip tracked dailies (already paid)
-    else if(e.type==='weekly')bal-=(a/7)*dl;
-    else if(e.type==='monthly')bal-=a*Math.ceil(dl/30);
-    else if(e.type==='once'&&e.date){var ed=new Date(e.date+'T12:00:00');var today4=new Date();today4.setHours(0,0,0,0);var edDay=new Date(ed);edDay.setHours(0,0,0,0);if(!isNaN(ed)&&edDay>today4&&ed<=tgt)bal-=a;}
+    if(e.type==='daily'&&!e.date){
+      // recurring daily: card charges don't reduce accBal further (already in outstanding growth)
+      if(e.paymentType!=='card'){accBal-=a*dl;}
+      liqBal-=a*dl;
+    }else if(e.type==='weekly'){
+      if(e.paymentType!=='card'){accBal-=(a/7)*dl;}
+      liqBal-=(a/7)*dl;
+    }else if(e.type==='monthly'){
+      if(e.paymentType!=='card'){accBal-=a*Math.ceil(dl/30);}
+      liqBal-=a*Math.ceil(dl/30);
+    }else if(e.type==='once'&&e.date){
+      var ed=new Date(e.date+'T12:00:00');
+      var tod=new Date();tod.setHours(0,0,0,0);
+      var edD=new Date(ed);edD.setHours(0,0,0,0);
+      if(!isNaN(ed)&&edD>tod&&ed<=tgt){
+        if(e.paymentType!=='card'){accBal-=a;}
+        liqBal-=a;
+      }
+    }
   });
-  return{balance:bal,days:dl};
+
+  // SIP deductions from accounts (respect already-paid this month)
+  var thisMonthFC=new Date().toISOString().slice(0,7);
+  app.data.investments.filter(function(i){return +i.sip>0&&i.accountId&&i.type!=='FD';}).forEach(function(i){
+    var a=toBase(+i.sip||0,i.currency);
+    var alreadyPaidFC=i.lastSipPaid&&i.lastSipPaid===thisMonthFC;
+    var sipMths=Math.ceil(dl/30)-(alreadyPaidFC?1:0);
+    if(sipMths>0){accBal-=a*sipMths;liqBal-=a*sipMths;}
+  });
+
+  // Card minimum payments: on each card's due date within forecast window
+  // Each due date occurrence: deduct minDue from accBal (you pay from account)
+  // and reduce outstanding (so liqBal improves by the same)
+  app.data.cards.forEach(function(c){
+    var dueDay=parseInt(c.due)||1;
+    var minDue=toBase(+c.minDue||0,c.currency||cur);
+    var outstanding=toBase(+c.outstanding||0,c.currency||cur);
+    // Count how many due dates fall in forecast window
+    var checkDate=new Date(now);
+    var cardPayments=0;
+    while(checkDate<=tgt){
+      var dueThisMonth=new Date(checkDate.getFullYear(),checkDate.getMonth(),dueDay);
+      if(dueThisMonth>now&&dueThisMonth<=tgt){
+        cardPayments++;
+      }
+      checkDate.setMonth(checkDate.getMonth()+1);
+    }
+    // Each payment: accBal decreases (cash out), outstanding decreases (debt reduced)
+    // Net effect on liqBal = 0 (accBal down, outstanding down equally)
+    // But if minDue < outstanding, remaining debt still costs liquidity
+    var totalPaid=Math.min(minDue*cardPayments,outstanding);
+    accBal-=totalPaid; // cash paid from account
+    // liqBal: net zero per payment (accBal-=minDue, outstanding-=minDue cancel out)
+    // but any outstanding NOT paid is still a drag — already accounted for in starting liqBal
+  });
+
+  return{
+    accountBalance:accBal,
+    liquidBalance:liqBal,
+    balance:liqBal, // backward compat
+    days:dl
+  };
 }
 
 function insights(){
   var r=[],d=app.data,t=totals(),cur=d.settings.currency||'AED';
-  if(t.up>60)r.push({type:'danger',h:'High credit utilization',b:t.up.toFixed(0)+'% used — target under 30%.'});
-  else if(t.up>30)r.push({type:'warn',h:'Credit utilization at '+t.up.toFixed(0)+'%',b:'Approaching the healthy 30% threshold.'});
-  else if(t.up>0)r.push({type:'ok',h:'Credit utilization healthy',b:'Only '+t.up.toFixed(0)+'% — great job!'});
+
+  // ── Credit card health (per card + overall) ──────────────────
+  if(d.cards.length>0){
+    // Overall utilisation
+    if(t.up>60)r.push({type:'danger',h:'High credit utilization '+t.up.toFixed(0)+'%',
+      b:'Over 60% used across your cards. Pay down outstanding to protect your credit health and reduce interest risk.'});
+    else if(t.up>30)r.push({type:'warn',h:'Credit utilization at '+t.up.toFixed(0)+'%',
+      b:'Approaching the healthy 30% threshold. Try to keep it under 30% for best financial health.'});
+    else if(t.up>0)r.push({type:'ok',h:'Credit utilization healthy at '+t.up.toFixed(0)+'%',
+      b:'Great job keeping card usage low. Under 30% means you\'re in control.'});
+
+    // Monthly card spend vs income
+    var cardExpSpend=d.expenses.reduce(function(s,e){
+      var a=toBase(+e.amount||0,e.currency);
+      var isTracked=e.type==='daily'&&e.date;
+      var mo=isTracked?0:(e.type==='daily'?a*30:e.type==='weekly'?a*4.33:e.type==='once'?0:a);
+      return s+(e.paymentType==='card'?mo:0);
+    },0);
+    var cardPct=t.mi>0?(cardExpSpend/t.mi*100):0;
+    if(cardExpSpend>0&&t.mi>0){
+      if(cardPct>70)r.push({type:'danger',h:'Card spend is '+cardPct.toFixed(0)+'% of income',
+        b:'Most of your income goes to card charges. Ensure you can pay the full balance each month to avoid interest.'});
+      else if(cardPct>40)r.push({type:'warn',h:'Card spend is '+cardPct.toFixed(0)+'% of income',
+        b:'Heavy card usage. You\'re managing it well if you pay in full each month.'});
+      else r.push({type:'ok',h:'Card spend is '+cardPct.toFixed(0)+'% of income',
+        b:'Card usage is proportionate to your income. Keep paying in full for maximum cashback benefit.'});
+    }
+
+    // Can you cover total outstanding from accounts?
+    var canCover=t.bank>=t.co;
+    if(t.co>0){
+      if(canCover)r.push({type:'ok',h:'Accounts can cover card debt',
+        b:'Your account balance ('+fmt(t.bank,cur)+') exceeds card outstanding ('+fmt(t.co,cur)+'). You could clear it all today if needed.'});
+      else r.push({type:'danger',h:'Card debt exceeds account balance',
+        b:'Outstanding '+fmt(t.co,cur)+' vs accounts '+fmt(t.bank,cur)+'. Reduce card spending or top up accounts.'});
+    }
+
+    // Per-card: due soon
+    d.cards.forEach(function(c){
+      var dd=dueDays(c.due);
+      var ccur=c.currency||cur;
+      var out=toBase(+c.outstanding||0,ccur);
+      var minD=toBase(+c.minDue||0,ccur);
+      if(dd<=3&&out>0){
+        r.push({type:'warn',h:(c.nickname||c.bank)+' due '+(dd===0?'today':'in '+dd+' days'),
+          b:'Full: '+fmt(out,cur)+' · Min: '+fmt(minD,cur)+(ccur!==cur?' ('+fmtf(+c.outstanding||0,ccur)+')':'')});
+      }
+    });
+  }
+
+  // ── Savings rate ─────────────────────────────────────────────
   if(t.mi>0){
     var sv=(t.mi-t.me)/t.mi*100;
-    if(sv<10)r.push({type:'warn',h:'Low savings rate '+sv.toFixed(0)+'%',b:'Aim to save at least 20% of income.'});
-    else if(sv>=20)r.push({type:'ok',h:'Strong savings rate '+sv.toFixed(0)+'%',b:'Building wealth effectively.'});
+    if(sv<0)r.push({type:'danger',h:'Spending more than you earn',
+      b:'Monthly expenses ('+fmt(t.me,cur)+') exceed income ('+fmt(t.mi,cur)+'). Review your recurring costs.'});
+    else if(sv<10)r.push({type:'warn',h:'Low savings rate '+sv.toFixed(0)+'%',
+      b:'Aim for at least 20%. Consider which expenses could move to needs-only.'});
+    else if(sv>=20)r.push({type:'ok',h:'Strong savings rate '+sv.toFixed(0)+'%',
+      b:'Saving '+fmt(t.mi-t.me,cur)+' per month. Keep it up.'});
   }
+
+  // ── Runway ───────────────────────────────────────────────────
   if(t.me>0){
-    var rw=t.daily>0?t.bank/t.daily:999;
-    if(rw<60)r.push({type:'danger',h:'Low runway — '+Math.round(rw)+' days',b:'Current bank balance covers only '+Math.round(rw)+' days of spending.'});
-    else if(rw>=90)r.push({type:'ok',h:'Solid runway — '+Math.floor(rw/30)+' months',b:'Good emergency buffer at current burn rate.'});
+    var liquid=t.bank-t.co; // actual spendable cash after card obligations
+    if(liquid<=0){
+      r.push({type:'danger',h:'Overextended — card debt exceeds cash',
+        b:'Card outstanding ('+fmt(t.co,cur)+') exceeds all account balances ('+fmt(t.bank,cur)+'). Prioritise paying down card debt.'});
+    }else{
+      var rw=t.daily>0?liquid/t.daily:999;
+      if(rw<30)r.push({type:'danger',h:'Low liquid runway — '+Math.round(rw)+' days',
+        b:'After card debt, your liquid position covers only '+Math.round(rw)+' days of spending.'});
+      else if(rw<60)r.push({type:'warn',h:'Runway '+Math.round(rw)+' days',
+        b:'Consider building a larger buffer. 90+ days is ideal.'});
+      else if(rw>=90)r.push({type:'ok',h:'Good runway — '+Math.floor(rw/30)+' months',
+        b:'Solid emergency buffer at current burn rate.'});
+    }
   }
-  d.cards.forEach(function(c){
-    var dd=dueDays(c.due);
-    if(dd<=3){var ccur=c.currency||cur;r.push({type:'warn',h:(c.nickname||c.bank)+' due '+(dd===0?'today':dd+'d'),b:'Min: '+fmtf(toBase(+c.minDue||0,ccur),cur)+(ccur!==cur?' ('+fmtf(+c.minDue||0,ccur)+')':'')});}
-  });
-  if(!r.length)r.push({type:'info',h:'Add your financial data',b:'Add accounts, income, and expenses to see personalized insights.'});
+
+  if(!r.length)r.push({type:'info',h:'Add your financial data',
+    b:'Add accounts, income, expenses and credit cards to see personalized insights.'});
   return r;
 }
 
@@ -716,8 +842,6 @@ function renderDashboard(){
   var d=app.data,t=totals(),cur=d.settings.currency||'AED',now=new Date();
   if(!app.forecastDate){var fd=new Date();fd.setMonth(fd.getMonth()+1);app.forecastDate=fd.toISOString().split('T')[0];}
   var fc=calcForecast(app.forecastDate);
-  var fcSt=fc?(fc.balance>t.me*3?'ok':fc.balance>0?'warn':'bad'):null;
-  var fcClr={ok:'var(--ac)',warn:'var(--am)',bad:'var(--rd)'}[fcSt]||'var(--t2)';
   var fcDate='';
   try{fcDate=new Date(app.forecastDate+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});}catch(e){}
   var upcoming=[],nowDay=now.getDate(),dim=dpm(now);
@@ -743,16 +867,21 @@ function renderDashboard(){
   h+='<div><div class="ph-title">'+greet()+', '+esc(d.settings.name||'there')+' '+(now.getHours()<12?'☀️':now.getHours()<17?'👋':'🌙')+'</div>';
   h+='<div class="ph-sub">'+now.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})+'</div></div>';
   h+='</div><div class="page-body">';
-  // Hero
+  // Hero — show net worth + liquid breakdown
+  var liquid=t.bank-t.co;
   h+='<div class="nw-hero"><div class="nw-hero-lbl">Total Net Worth</div><div class="nw-hero-val">'+fmt(t.nw,cur)+'</div>';
   h+='<div class="nw-pills"><span class="nw-pill">🏦 '+fmt(t.bank,cur)+'</span><span class="nw-pill">📈 '+fmt(t.inv,cur)+'</span>';
-  if(t.co>0)h+='<span class="nw-pill" style="background:rgba(0,0,0,.2)">💳 -'+fmt(t.co,cur)+'</span>';
+  if(t.co>0){
+    h+='<span class="nw-pill" style="background:rgba(0,0,0,.2)">💳 -'+fmt(t.co,cur)+'</span>';
+    h+='<span class="nw-pill" style="background:rgba(255,255,255,.15)">💵 Liquid: '+fmt(liquid,cur)+'</span>';
+  }
   h+='</div></div>';
   // Stats
-  h+='<div class="g3" style="margin-bottom:13px">';
+  h+='<div class="g4" style="margin-bottom:13px">';
   h+='<div class="stat-box"><div class="stat-box-lbl">Monthly Income</div><div class="stat-box-val green">'+fmt(t.mi,cur)+'</div></div>';
   h+='<div class="stat-box"><div class="stat-box-lbl">Monthly Spend</div><div class="stat-box-val red">'+fmt(t.me,cur)+'</div></div>';
-  h+='<div class="stat-box"><div class="stat-box-lbl">Saved</div><div class="stat-box-val '+(sv>=0?'green':'red')+'">'+fmt(sv,cur)+' <span style="font-size:11px;color:var(--t2)">('+svp+'%)</span></div></div>';
+  h+='<div class="stat-box"><div class="stat-box-lbl">Saved/mo</div><div class="stat-box-val '+(sv>=0?'green':'red')+'">'+fmt(sv,cur)+' <span style="font-size:11px;color:var(--t2)">('+svp+'%)</span></div></div>';
+  h+='<div class="stat-box"><div class="stat-box-lbl">Card Debt</div><div class="stat-box-val '+(t.co>0?'red':'green')+'">'+fmt(t.co,cur)+'</div></div>';
   h+='</div>';
   // Two cols
   h+='<div class="g2" style="margin-bottom:13px">';
@@ -783,21 +912,51 @@ function renderDashboard(){
   h+='</div></div>';
   // Insights
   h+='<div style="margin-bottom:13px"><div style="font-size:14px;font-weight:700;margin-bottom:9px">💡 Insights</div>';
-  ins.slice(0,3).forEach(function(i){
+  ins.slice(0,5).forEach(function(i){
     h+='<div class="ins-card ins-'+i.type+'"><div style="font-size:18px">'+(i.type==='ok'?'✅':i.type==='warn'?'⚠️':i.type==='danger'?'🚨':'ℹ️')+'</div>';
     h+='<div><div class="ins-t">'+esc(i.h)+'</div><div class="ins-b">'+esc(i.b)+'</div></div></div>';
   });
   h+='</div>';
-  // Forecast
+  // Forecast — show both liquid and account tracks
+  var fcLiqSt=fc?(fc.liquidBalance>t.me*3?'ok':fc.liquidBalance>0?'warn':'bad'):null;
+  var fcAccSt=fc?(fc.accountBalance>t.me*3?'ok':fc.accountBalance>0?'warn':'bad'):null;
+  var fcLiqClr={ok:'var(--ac)',warn:'var(--am)',bad:'var(--rd)'}[fcLiqSt]||'var(--t2)';
+  var fcAccClr={ok:'var(--ac)',warn:'var(--am)',bad:'var(--rd)'}[fcAccSt]||'var(--t2)';
   h+='<div class="card" style="margin-bottom:13px"><div style="display:flex;align-items:center;gap:7px;margin-bottom:12px"><span style="font-size:16px">🔮</span><div style="font-size:14px;font-weight:700">Balance Forecast</div></div>';
-  h+='<div style="display:flex;gap:12px;flex-wrap:wrap">';
-  h+='<div style="flex:1;min-width:140px"><label class="fl">Project to date</label><input type="date" id="forecast-date" value="'+esc(app.forecastDate||'')+'" style="max-width:190px"></div>';
+  h+='<div class="fg"><label class="fl">Project to date</label><input type="date" id="forecast-date" value="'+esc(app.forecastDate||'')+'" style="max-width:190px"></div>';
   if(fc){
-    h+='<div style="flex:1;min-width:140px"><div style="font-size:11px;color:var(--t2);margin-bottom:3px">Balance on '+fcDate+'</div>';
-    h+='<div class="mono" style="font-size:22px;font-weight:800;color:'+fcClr+'">'+fmt(fc.balance,cur)+'</div>';
-    h+='<span class="badge badge-'+(fcSt==='ok'?'g':fcSt==='warn'?'a':'r')+'" style="margin-top:5px">'+(fcSt==='ok'?'✓ Comfortable':fcSt==='warn'?'⚠ Manageable':'✗ Low')+'</span></div>';
-  }else{h+='<div style="flex:1;font-size:12px;color:var(--t3)">Pick a future date</div>';}
-  h+='</div></div>';
+    h+='<div class="g2" style="margin-top:4px">';
+    h+='<div style="background:var(--el);border-radius:var(--r12);padding:12px">';
+    h+='<div style="font-size:10px;color:var(--t2);margin-bottom:3px">💵 Liquid Balance</div>';
+    h+='<div style="font-size:11px;color:var(--t3);margin-bottom:4px">Accounts minus card debt</div>';
+    h+='<div class="mono" style="font-size:18px;font-weight:800;color:'+fcLiqClr+'">'+fmt(fc.liquidBalance,cur)+'</div>';
+    h+='<span class="badge badge-'+(fcLiqSt==='ok'?'g':fcLiqSt==='warn'?'a':'r')+'" style="margin-top:5px;font-size:10px">'+(fcLiqSt==='ok'?'✓ Comfortable':fcLiqSt==='warn'?'⚠ Manageable':'✗ Low')+'</span>';
+    h+='</div>';
+    h+='<div style="background:var(--el);border-radius:var(--r12);padding:12px">';
+    h+='<div style="font-size:10px;color:var(--t2);margin-bottom:3px">🏦 Account Balance</div>';
+    h+='<div style="font-size:11px;color:var(--t3);margin-bottom:4px">Raw cash in accounts</div>';
+    h+='<div class="mono" style="font-size:18px;font-weight:800;color:'+fcAccClr+'">'+fmt(fc.accountBalance,cur)+'</div>';
+    h+='<span class="badge badge-'+(fcAccSt==='ok'?'g':fcAccSt==='warn'?'a':'r')+'" style="margin-top:5px;font-size:10px">'+(fcAccSt==='ok'?'✓ Comfortable':fcAccSt==='warn'?'⚠ Manageable':'✗ Low')+'</span>';
+    h+='</div>';
+    h+='</div>';
+    // Count actual card payments in window
+    var fcCardPmts=0;
+    d.cards.forEach(function(c){
+      var checkD=new Date();var tgtD=new Date(app.forecastDate+'T12:00:00');
+      var due=parseInt(c.due)||1;
+      while(checkD<=tgtD){
+        var dm=new Date(checkD.getFullYear(),checkD.getMonth(),due);
+        if(dm>new Date()&&dm<=tgtD)fcCardPmts++;
+        checkD.setMonth(checkD.getMonth()+1);
+      }
+    });
+    var fcSipCount=d.investments.filter(function(i){return +i.sip>0&&i.sipDay&&i.type!=='FD';}).length;
+    var fcSubParts=[];
+    if(fcCardPmts>0)fcSubParts.push(fcCardPmts+' card payment'+(fcCardPmts!==1?'s':''));
+    if(fcSipCount>0)fcSubParts.push(fcSipCount+' SIP'+(fcSipCount!==1?'s':''));
+    h+='<div style="font-size:11px;color:var(--t3);margin-top:8px">On '+fcDate+(fcSubParts.length?' · includes '+fcSubParts.join(' and '):'')+'</div>';
+  }else{h+='<div style="font-size:12px;color:var(--t3)">Pick a future date</div>';}
+  h+='</div>';
   // Chart
   h+='<div class="card"><div style="font-size:14px;font-weight:700;margin-bottom:12px">📊 Spending by Category</div>';
   h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:center">';
@@ -958,6 +1117,7 @@ function renderIncome(){
     var incDateBadge='';
     if(i.date&&i.freq==='monthly')incDateBadge='<span class="badge badge-m">Day '+esc(i.date)+'</span>';
     else if(i.date&&i.freq==='weekly')incDateBadge='<span class="badge badge-m">Every '+(['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][+i.date]||'')+'</span>';
+    else if(i.date&&i.freq==='once'){var incDtDisp='';try{incDtDisp=new Date(i.date+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'});}catch(ex){}incDateBadge=incDtDisp?'<span class="badge badge-m">'+incDtDisp+'</span>':'';};
     var incAcc=i.accountId?d.accounts.find(function(a){return a.id===i.accountId;}):null;
     var incAccBadge=incAcc?'<span class="badge badge-b" style="font-size:9px">🏦 '+esc(incAcc.name)+'</span>':'';
     h+='<div style="display:flex;gap:4px;flex-wrap:wrap"><span class="badge '+(i.recurring?'badge-g':'badge-m')+'">'+(i.recurring?'Recurring':'One-time')+'</span><span class="badge badge-m">'+esc(i.freq)+'</span>'+incDateBadge+incAccBadge+curBadge(icur)+'</div></div>';
@@ -2130,8 +2290,10 @@ document.addEventListener('click',function(e){
               return a.id===payId?Object.assign({},a,{balance:String(Math.max(0,(+a.balance||0)-deductAmt))}):a;
             });
           }
-        }else if(payType==='card'&&payId){
-          // Add to card outstanding balance
+        }else if(payType==='card'&&payId&&(expType==='daily'||expType==='once')){
+          // Add to card outstanding for point-in-time charges (once/daily)
+          // Monthly/weekly card expenses are tracked for forecasting but don't
+          // immediately increase outstanding (they accumulate when you pay the bill)
           var tgtCard=app.data.cards.find(function(c){return c.id===payId;});
           if(tgtCard){
             var cardCurr=tgtCard.currency||(app.data.settings.currency||'AED');
