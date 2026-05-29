@@ -125,7 +125,7 @@ select option{background:var(--sf)}
 .nw-hero-val{font-family:Syne,sans-serif;font-size:30px;font-weight:800;color:#000;line-height:1;margin-bottom:8px}
 .nw-pills{display:flex;gap:7px;flex-wrap:wrap}
 .nw-pill{background:rgba(0,0,0,.12);border-radius:99px;padding:3px 9px;font-size:11px;font-weight:600;color:#000}
-.stat-box{background:var(--el);border-radius:var(--r12);padding:12px 13px}
+.stat-box{background:var(--el);border-radius:var(--r12);padding:12px 13px;cursor:pointer;transition:background .15s}.stat-box:hover{background:var(--bd)}.stat-box .stat-tap{font-size:9px;color:var(--t3);margin-top:3px}
 .stat-box-lbl{font-size:11px;color:var(--t2);margin-bottom:3px}
 .stat-box-val{font-size:16px;font-weight:700;font-family:'JetBrains Mono',monospace;color:var(--tx)}
 .stat-box-val.green{color:var(--ac)}.stat-box-val.red{color:var(--rd)}
@@ -869,7 +869,7 @@ function renderDashboard(){
   h+='</div><div class="page-body">';
   // Hero — show net worth + liquid breakdown
   var liquid=t.bank-t.co;
-  h+='<div class="nw-hero"><div class="nw-hero-lbl">Total Net Worth</div><div class="nw-hero-val">'+fmt(t.nw,cur)+'</div>';
+  h+='<div class="nw-hero" data-action="show-calc" data-calc="networth" style="cursor:pointer"><div class="nw-hero-lbl">Total Net Worth · tap for breakdown</div><div class="nw-hero-val">'+fmt(t.nw,cur)+'</div>';
   h+='<div class="nw-pills"><span class="nw-pill">🏦 '+fmt(t.bank,cur)+'</span><span class="nw-pill">📈 '+fmt(t.inv,cur)+'</span>';
   if(t.co>0){
     h+='<span class="nw-pill" style="background:rgba(0,0,0,.2)">💳 -'+fmt(t.co,cur)+'</span>';
@@ -878,10 +878,10 @@ function renderDashboard(){
   h+='</div></div>';
   // Stats
   h+='<div class="g4" style="margin-bottom:13px">';
-  h+='<div class="stat-box"><div class="stat-box-lbl">Monthly Income</div><div class="stat-box-val green">'+fmt(t.mi,cur)+'</div></div>';
-  h+='<div class="stat-box"><div class="stat-box-lbl">Monthly Spend</div><div class="stat-box-val red">'+fmt(t.me,cur)+'</div></div>';
-  h+='<div class="stat-box"><div class="stat-box-lbl">Saved/mo</div><div class="stat-box-val '+(sv>=0?'green':'red')+'">'+fmt(sv,cur)+' <span style="font-size:11px;color:var(--t2)">('+svp+'%)</span></div></div>';
-  h+='<div class="stat-box"><div class="stat-box-lbl">Card Debt</div><div class="stat-box-val '+(t.co>0?'red':'green')+'">'+fmt(t.co,cur)+'</div></div>';
+  h+='<div class="stat-box" data-action="show-calc" data-calc="income"><div class="stat-box-lbl">Monthly Income</div><div class="stat-box-val green">'+fmt(t.mi,cur)+'</div><div class="stat-tap">Tap for breakdown</div></div>';
+  h+='<div class="stat-box" data-action="show-calc" data-calc="spend"><div class="stat-box-lbl">Monthly Spend</div><div class="stat-box-val red">'+fmt(t.me,cur)+'</div><div class="stat-tap">Tap for breakdown</div></div>';
+  h+='<div class="stat-box" data-action="show-calc" data-calc="saved"><div class="stat-box-lbl">Saved/mo</div><div class="stat-box-val '+(sv>=0?'green':'red')+'">'+fmt(sv,cur)+' <span style="font-size:11px;color:var(--t2)">('+svp+'%)</span></div><div class="stat-tap">Tap for breakdown</div></div>';
+  h+='<div class="stat-box" data-action="show-calc" data-calc="debt"><div class="stat-box-lbl">Card Debt</div><div class="stat-box-val '+(t.co>0?'red':'green')+'">'+fmt(t.co,cur)+'</div><div class="stat-tap">Tap for breakdown</div></div>';
   h+='</div>';
   // Two cols
   h+='<div class="g2" style="margin-bottom:13px">';
@@ -1919,6 +1919,131 @@ function renderLedgerSettleModal(personId, netAmt){
 }
 
 
+function renderCalcBreakdown(which){
+  var d=app.data,cur=d.settings.currency||'AED',t=totals();
+  var rows='',total=0,title='',subtitle='',color='var(--ac)';
+
+  function row(label,amount,note,clr){
+    var c=clr||'var(--tx)';
+    var amtStr=amount!==null?'<span class="mono" style="font-size:13px;font-weight:700;color:'+c+'">'+fmt(amount,cur)+'</span>':'';
+    var noteStr=note?'<div style="font-size:10px;color:var(--t3);margin-top:1px">'+note+'</div>':'';
+    return '<div style="display:flex;align-items:flex-start;gap:9px;padding:8px 0;border-bottom:1px solid var(--bds)">'+
+      '<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:500;color:var(--tx)">'+esc(label)+'</div>'+noteStr+'</div>'+amtStr+'</div>';
+  }
+
+  if(which==='income'){
+    title='💚 Monthly Income Breakdown';
+    color='var(--ac)';
+    subtitle='Only recurring income counts toward monthly income.';
+    d.income.forEach(function(i){
+      if(!i.recurring)return;
+      var a=toBase(+i.amount||0,i.currency);
+      var mo=i.freq==='weekly'?a*4.33:a;
+      var note=i.freq==='weekly'?fmtf(+i.amount||0,i.currency)+' × 4.33 weeks':'Monthly · '+fmtf(+i.amount||0,i.currency)+(i.currency!==cur?' ('+fmtf(a,cur)+' converted)':'');
+      rows+=row(i.source,mo,note,'var(--ac)');
+      total+=mo;
+    });
+    var nonRec=d.income.filter(function(i){return !i.recurring;});
+    if(nonRec.length){
+      rows+='<div style="font-size:11px;color:var(--t3);padding:8px 0;border-bottom:1px solid var(--bds)">Not counted (one-time): '+nonRec.map(function(i){return esc(i.source);}).join(', ')+'</div>';
+    }
+    if(!d.income.length) rows='<div style="font-size:12px;color:var(--t3);padding:20px 0;text-align:center">No income added yet</div>';
+  }
+
+  else if(which==='spend'){
+    title='🔴 Monthly Spend Breakdown';
+    color='var(--rd)';
+    subtitle='Recurring expenses projected to 30 days. Once-off and tracked daily entries are excluded.';
+    d.expenses.forEach(function(e){
+      var a=toBase(+e.amount||0,e.currency);
+      var isTracked=e.type==='daily'&&e.date;
+      if(isTracked||e.type==='once'){
+        rows+=row(e.name,null,'Excluded — '+(isTracked?'one-off tracked entry':'one-time expense'),'var(--t3)');
+        return;
+      }
+      var mo=e.type==='daily'?a*30:e.type==='weekly'?a*4.33:a;
+      var note='';
+      if(e.type==='daily') note=fmtf(+e.amount||0,e.currency)+' × 30 days/month';
+      else if(e.type==='weekly') note=fmtf(+e.amount||0,e.currency)+' × 4.33 weeks/month';
+      else note='Monthly flat amount';
+      if(e.currency!==cur) note+=' = '+fmtf(a,cur)+' → '+fmtf(mo,cur)+' (converted)';
+      var payTag=e.paymentType==='card'?' · 💳 card':e.accountId?' · 🏦 account':'';
+      rows+=row(e.name,mo,note+(payTag?payTag:''),'var(--rd)');
+      total+=mo;
+    });
+    if(!d.expenses.length) rows='<div style="font-size:12px;color:var(--t3);padding:20px 0;text-align:center">No expenses added yet</div>';
+  }
+
+  else if(which==='saved'){
+    title='💵 Saved/Month Breakdown';
+    color='var(--ac)';
+    subtitle='Saved = Monthly Income − Monthly Spend. Positive means you\'re building wealth.';
+    rows+=row('Monthly Income',t.mi,'Sum of all recurring income','var(--ac)');
+    rows+=row('Monthly Spend',-t.me,'Sum of all recurring expenses (excl. once-off)','var(--rd)');
+    rows+='<div style="padding:10px 0;display:flex;justify-content:space-between;align-items:center;border-top:2px solid var(--bd);margin-top:4px">';
+    rows+='<span style="font-size:13px;font-weight:700">= Monthly Saved</span>';
+    rows+='<span class="mono" style="font-size:16px;font-weight:800;color:'+(t.mi-t.me>=0?'var(--ac)':'var(--rd)')+'">'+fmt(t.mi-t.me,cur)+'</span></div>';
+    var svp2=t.mi>0?Math.round((t.mi-t.me)/t.mi*100):0;
+    rows+='<div style="font-size:12px;color:var(--t2);padding-top:8px">That\'s <strong style="color:var(--tx)">'+svp2+'%</strong> of your income being saved each month.</div>';
+    if(t.mi===0&&t.me===0) rows='<div style="font-size:12px;color:var(--t3);padding:20px 0;text-align:center">Add income and expenses to see this calculation</div>';
+    total=t.mi-t.me;
+  }
+
+  else if(which==='networth'){
+    title='🏦 Net Worth Breakdown';
+    color='var(--ac)';
+    subtitle='Net Worth = Bank Accounts + Investments − Card Debt';
+    rows+=row('Bank & Cash Accounts',t.bank,'Sum of all account balances','var(--ac)');
+    rows+=row('Investments (current value)',t.inv,'Mutual funds, stocks, gold, FDs at current value','var(--ac)');
+    rows+=row('Credit Card Debt',-t.co,'Total outstanding across all cards','var(--rd)');
+    rows+='<div style="padding:10px 0;display:flex;justify-content:space-between;align-items:center;border-top:2px solid var(--bd);margin-top:4px">';
+    rows+='<span style="font-size:13px;font-weight:700">= Net Worth</span>';
+    rows+='<span class="mono" style="font-size:16px;font-weight:800;color:'+(t.nw>=0?'var(--ac)':'var(--rd)')+'">'+fmt(t.nw,cur)+'</span></div>';
+    if(t.co>0){
+      var liq2=t.bank-t.co;
+      rows+='<div style="margin-top:10px;padding:10px 12px;background:var(--el);border-radius:var(--r12);font-size:12px">';
+      rows+='<div style="font-weight:600;margin-bottom:4px">Liquid Position (no investments)</div>';
+      rows+='<div style="color:var(--t2)">Accounts '+fmt(t.bank,cur)+' − Cards '+fmt(t.co,cur)+' = <strong style="color:'+(liq2>=0?'var(--ac)':'var(--rd)')+'">'+fmt(liq2,cur)+'</strong></div>';
+      rows+='</div>';
+    }
+    total=t.nw;
+  }
+
+  else if(which==='debt'){
+    title='💳 Card Debt Breakdown';
+    color='var(--rd)';
+    subtitle='Total outstanding balance across all your credit cards right now.';
+    if(!d.cards.length){
+      rows='<div style="font-size:12px;color:var(--t3);padding:20px 0;text-align:center">No credit cards added</div>';
+    }else{
+      d.cards.forEach(function(c){
+        var ccur=c.currency||cur;
+        var out=+c.outstanding||0;
+        var outBase=toBase(out,ccur);
+        var pct=out/(+c.limit||1)*100;
+        var note='Limit: '+fmtf(+c.limit||0,ccur)+' · '+pct.toFixed(0)+'% used · Due day '+c.due;
+        if(ccur!==cur) note+=' · '+fmtf(out,ccur)+' → '+fmtf(outBase,cur)+' converted';
+        rows+=row((c.nickname||c.bank),outBase,note,'var(--rd)');
+        total+=outBase;
+      });
+      rows+='<div style="padding:8px 0;font-size:11px;color:var(--t2)">Min payments due this month: '+fmt(d.cards.reduce(function(s,c){return s+toBase(+c.minDue||0,c.currency||cur);},0),cur)+'</div>';
+    }
+  }
+
+  var totalRow='';
+  if(which==='income'||which==='spend'||which==='debt'){
+    totalRow='<div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-top:2px solid var(--bd);margin-top:4px">'+
+      '<span style="font-size:13px;font-weight:700">Total</span>'+
+      '<span class="mono" style="font-size:18px;font-weight:800;color:'+color+'">'+fmt(total,cur)+'</span></div>';
+  }
+
+  return mHtml(title,
+    '<div style="font-size:12px;color:var(--t2);margin-bottom:14px;line-height:1.5">'+esc(subtitle)+'</div>'+
+    rows+totalRow+
+    '<div class="mf"><button class="btn btn-primary" data-action="close-modal">Got it</button></div>'
+  );
+}
+
 // ── SIDEBAR & BOTTOMNAV ────────────────────────────────────────
 function renderSidebar(){
   var d=app.data,s=d.settings||{},pending=d.tasks.filter(function(t){return !t.done;}).length;
@@ -2135,6 +2260,11 @@ document.addEventListener('click',function(e){
       app.view=el.dataset.view;
       render();
       break;
+    case 'show-calc':{
+      var calcType=el.dataset.calc;
+      openModal(renderCalcBreakdown(calcType));
+      break;}
+
     case 'toggle-theme':
       app.theme=app.theme==='dark'?'light':'dark';render();break;
     case 'open-modal':
