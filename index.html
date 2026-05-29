@@ -2207,13 +2207,33 @@ document.addEventListener('click',function(e){
       if(!p3)break;
       var txToRemove=p3.transactions&&p3.transactions.find(function(tx){return tx.id===ltid;});
       if(!txToRemove)break;
-      // Build confirm message
-      var remMsg='Remove this entry?';
       var todayRem=new Date().toISOString().split('T')[0];
-      var willReverse=txToRemove.accountId&&txToRemove.date===todayRem&&txToRemove.type!=='settled';
-      if(willReverse)remMsg='Remove this entry and reverse the account balance change?';
+      var remHasAccount=txToRemove.accountId&&(+txToRemove.amount||0)>0;
+      var remIsToday=txToRemove.date===todayRem;
+      var willReverse=remHasAccount&&remIsToday;
+      // For settled entries: figure out net direction BEFORE this tx to know reversal direction
+      var settleWasReceive=false;
+      if(willReverse&&txToRemove.type==='settled'){
+        // Recalculate net without this tx to determine if it was receive or pay
+        var remNetBefore=0;
+        var remCur=app.data.settings.currency||'AED';
+        (p3.transactions||[]).forEach(function(tx){
+          if(tx.id===ltid)return; // skip the one we're deleting
+          var a=toBase(+tx.amount||0,tx.currency||remCur);
+          if(tx.type==='lent')remNetBefore+=a;
+          else if(tx.type==='borrowed')remNetBefore-=a;
+          else if(tx.type==='partial')remNetBefore-=a;
+          else if(tx.type==='settled'){
+            if(remNetBefore>0)remNetBefore=Math.max(0,remNetBefore-a);
+            else if(remNetBefore<0)remNetBefore=Math.min(0,remNetBefore+a);
+          }
+        });
+        // net before this settlement: >0 means they owed me → I received → balance was increased
+        settleWasReceive=remNetBefore>0;
+      }
+      var remMsg=willReverse?'Remove this entry and reverse the account balance change?':'Remove this entry?';
       if(!confirm(remMsg))break;
-      // Reverse account balance if applicable
+      // Reverse account balance
       if(willReverse){
         var remAcc=app.data.accounts.find(function(a){return a.id===txToRemove.accountId;});
         if(remAcc){
@@ -2225,10 +2245,13 @@ document.addEventListener('click',function(e){
             (remAccCur===remBase?toBase(remAmt,remTxCur):(remAmt*(app.data.settings.rates[remTxCur]||1)/(app.data.settings.rates[remAccCur]||1)));
           var curBal=+remAcc.balance||0;
           var newBal;
-          // Reverse: lent had subtracted → add back; borrowed/partial had added → subtract back
           if(txToRemove.type==='lent')newBal=curBal+remAmtInAccCur;
           else if(txToRemove.type==='borrowed'||txToRemove.type==='partial')newBal=curBal-remAmtInAccCur;
-          else newBal=curBal;
+          else if(txToRemove.type==='settled'){
+            // Reverse settle: if I received → subtract back; if I paid → add back
+            if(settleWasReceive)newBal=curBal-remAmtInAccCur;
+            else newBal=curBal+remAmtInAccCur;
+          } else newBal=curBal;
           app.data.accounts=app.data.accounts.map(function(a){
             return a.id===txToRemove.accountId?Object.assign({},a,{balance:String(Math.max(0,newBal))}):a;
           });
