@@ -66,6 +66,8 @@ body.auth-open{overflow-y:auto}
 .btn-icon{padding:6px;width:36px;height:36px;min-width:36px;justify-content:center;border-radius:var(--r8)}
 .btn-danger{background:var(--rdd);border-color:transparent;color:var(--rd)}
 .btn-danger:hover{background:var(--rd);color:#fff}
+.btn-edit{background:var(--bld);border-color:transparent;color:var(--bl)}
+.btn-edit:hover{background:var(--bl);color:#fff}
 .card{background:var(--sf);border:1px solid var(--bds);border-radius:var(--r16);padding:16px;transition:all .2s}
 .mono{font-family:'JetBrains Mono',monospace}
 .g2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -162,6 +164,8 @@ select option{background:var(--sf)}
 
 
 /* ── Bottom Sheet ── */
+.ledger-hdr{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;transition:background .13s}
+.ledger-hdr:hover{background:var(--el)}
 .bsheet-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:1100;opacity:0;transition:opacity .25s;pointer-events:none;visibility:hidden}
 .bsheet-overlay.open{opacity:1;pointer-events:auto;visibility:visible}
 .bsheet{position:fixed;bottom:0;left:0;right:0;background:var(--sf);border-radius:20px 20px 0 0;z-index:1101;transform:translateY(100%);transition:transform .3s cubic-bezier(.4,0,.2,1);padding-bottom:env(safe-area-inset-bottom,16px);max-height:85vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
@@ -335,6 +339,7 @@ var IPATHS={
   plus:'M12 5V19|M5 12H19',
   x:'M18 6L6 18|M6 6L18 18',
   trash:'M3 6H21|M19 6L18 20A2 2 0 0 1 16 22H8A2 2 0 0 1 6 20L5 6|M10 11V17|M14 11V17|M9 6V4H15V6',
+  edit:'M11 4H4A2 2 0 0 0 2 6V20A2 2 0 0 0 4 22H18A2 2 0 0 0 20 20V13|M18.5 2.5A2.121 2.121 0 0 1 21 5L12 14L8 15L9 11Z',
   down:'M12 5V19|M19 12L12 19L5 12',
   layers:'M12 2L2 7L12 12L22 7Z|M2 17L12 22L22 17|M2 12L12 17L22 12',
   tag:'M20.59 13.41L13.42 20.58A2 2 0 0 1 11 20.58L2 11.59V2H11L20.59 11.59A2 2 0 0 1 20.59 13.41Z|M7 7H7.01',
@@ -390,7 +395,7 @@ var SAMPLE={
 var _now=new Date();
 var app={
   view:'dashboard',theme:'dark',data:null,
-  expFil:'all',taskFil:'all',
+  expFil:'all',taskFil:'all',ledgerOpen:{},_navRender:false,
   calMonth:_now.getMonth(),calYear:_now.getFullYear(),
   calFil:'all',calDay:null,
   forecastDate:null
@@ -407,7 +412,7 @@ Object.defineProperty(window,'_wealthrUserId',{
   set:function(v){_userId=v;}
 });
 window._wealthrLoadData=function(cb){loadData(cb);};
-window._wealthrRender=function(){render();};
+window._wealthrRender=function(){app._navRender=true;render();};
 
 function migrateData(d){
   if(!d.settings)d.settings={};
@@ -422,7 +427,12 @@ function migrateData(d){
   ['accounts','cards','expenses','income','investments'].forEach(function(k){
     d[k].forEach(function(item){if(!item.currency)item.currency=base;});
   });
-  d.expenses.forEach(function(e){if(!e.necessity)e.necessity='need';});
+  d.expenses.forEach(function(e){
+    if(!e.necessity)e.necessity='need';
+    if(!e.accountId)e.accountId='';
+    // Clear stale dates from monthly/weekly expenses (date only meaningful for once/daily)
+    if((e.type==='monthly'||e.type==='weekly')&&e.date)e.date='';
+  });
   return d;
 }
 
@@ -501,7 +511,9 @@ function totals(){
   var cl=d.cards.reduce(function(s,c){return s+toBase(+c.limit||0,c.currency);},0);
   var me=d.expenses.reduce(function(s,e){
     var a=toBase(+e.amount||0,e.currency);
-    return s+(e.type==='daily'?a*30:e.type==='weekly'?a*4.33:e.type==='once'?0:a);
+    // tracked daily (has specific date) = actual one-time spend, not recurring
+    var isTrackedDaily=e.type==='daily'&&e.date;
+    return s+(isTrackedDaily?0:e.type==='daily'?a*30:e.type==='weekly'?a*4.33:e.type==='once'?0:a);
   },0);
   var mi=d.income.filter(function(i){return i.recurring;}).reduce(function(s,i){
     var a=toBase(+i.amount||0,i.currency);
@@ -523,10 +535,10 @@ function calcForecast(target){
   });
   app.data.expenses.forEach(function(e){
     var a=toBase(+e.amount||0,e.currency);
-    if(e.type==='daily')bal-=a*dl;
+    if(e.type==='daily'&&!e.date)bal-=a*dl; // skip tracked dailies (already paid)
     else if(e.type==='weekly')bal-=(a/7)*dl;
     else if(e.type==='monthly')bal-=a*Math.ceil(dl/30);
-    else if(e.type==='once'&&e.date){var ed=new Date(e.date+'T12:00:00');if(!isNaN(ed)&&ed>=now&&ed<=tgt)bal-=a;}
+    else if(e.type==='once'&&e.date){var ed=new Date(e.date+'T12:00:00');var today4=new Date();today4.setHours(0,0,0,0);var edDay=new Date(ed);edDay.setHours(0,0,0,0);if(!isNaN(ed)&&edDay>today4&&ed<=tgt)bal-=a;}
   });
   return{balance:bal,days:dl};
 }
@@ -586,18 +598,33 @@ function buildCalendarEvents(mo,yr){
     addEv(dd,{type:'card',label:esc(c.nickname||c.bank)+' payment due',amount:toBase(+c.minDue||0,ccur),currency:cur,color:'var(--rd)'});
   });
 
-  // Monthly expenses — shown on day 1
+  // Monthly expenses — shown on day 1 (recurring) or their specific date
   d.expenses.filter(function(e){return e.type==='monthly';}).forEach(function(e){
     var ecur=e.currency||cur;
-    addEv(1,{type:'expense',label:esc(e.name),amount:toBase(+e.amount||0,ecur),currency:cur,color:'var(--am)'});
+    // If expense has a specific date in this month, show on that date
+    var showDay=1;
+    if(e.date){try{var ep=e.date.split('-');var ey=parseInt(ep[0]),em=parseInt(ep[1])-1,ed=parseInt(ep[2]);if(em===mo&&ey===yr)showDay=ed;}catch(ex){}}
+    addEv(showDay,{type:'expense',label:esc(e.name),amount:toBase(+e.amount||0,ecur),currency:cur,color:'var(--am)'});
   });
 
-  // Daily expenses — shown every day
-  d.expenses.filter(function(e){return e.type==='daily';}).forEach(function(e){
+  // Actual daily expense entries (tracked with a specific date)
+  d.expenses.filter(function(e){return e.type==='daily'&&e.date;}).forEach(function(e){
+    try{
+      var dp=e.date.split('-');
+      var dy=parseInt(dp[0]),dm=parseInt(dp[1])-1,dd2=parseInt(dp[2]);
+      if(dm===mo&&dy===yr){
+        var ecur2=e.currency||cur;
+        addEv(dd2,{type:'expense',label:esc(e.name)+' ✓',amount:toBase(+e.amount||0,ecur2),currency:cur,color:'var(--rd)',tracked:true});
+      }
+    }catch(ex){}
+  });
+
+  // Daily expenses WITHOUT a specific date — shown every day as recurring
+  d.expenses.filter(function(e){return e.type==='daily'&&!e.date;}).forEach(function(e){
     var ecur=e.currency||cur;
     var daysInMonth=new Date(yr,mo+1,0).getDate();
     for(var dd=1;dd<=daysInMonth;dd++){
-      addEv(dd,{type:'expense',label:esc(e.name)+' (daily)',amount:toBase(+e.amount||0,ecur),currency:cur,color:'var(--am)'});
+      addEv(dd,{type:'expense',label:esc(e.name)+' (est)',amount:toBase(+e.amount||0,ecur),currency:cur,color:'var(--am)',estimate:true});
     }
   });
 
@@ -641,7 +668,7 @@ function buildCalendarEvents(mo,yr){
 function toast(msg,type){
   var t=document.createElement('div');
   var bg=type==='error'?'var(--rd)':type==='warn'?'var(--am)':'var(--ac)';
-  t.style.cssText='position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:'+bg+';color:#000;font-size:13px;font-weight:600;padding:9px 18px;border-radius:99px;z-index:9999;box-shadow:0 3px 14px rgba(0,0,0,.3);pointer-events:none;white-space:nowrap';
+  t.style.cssText='position:fixed;bottom:calc(70px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%);background:'+bg+';color:#000;font-size:13px;font-weight:600;padding:9px 18px;border-radius:99px;z-index:9999;box-shadow:0 3px 14px rgba(0,0,0,.3);pointer-events:none;white-space:nowrap';
   t.textContent=msg;
   document.body.appendChild(t);
   setTimeout(function(){
@@ -754,7 +781,8 @@ function renderAccounts(){
     h+='<div style="font-size:11px;color:var(--t2);margin-bottom:9px">'+esc(a.type)+'</div>';
     h+='<div class="mono" style="font-size:18px;font-weight:700">'+fmtf(bal,acur)+'</div>';
     if(acur!==cur)h+='<div style="font-size:11px;color:var(--t3);margin-top:1px">≈ '+fmtf(balBase,cur)+'</div>';
-    h+='<div style="margin-top:10px;padding-top:9px;border-top:1px solid var(--bds);display:flex;justify-content:flex-end">';
+    h+='<div style="margin-top:10px;padding-top:9px;border-top:1px solid var(--bds);display:flex;gap:6px;justify-content:flex-end">';
+    h+='<button class="btn btn-edit btn-sm" data-action="edit-item" data-key="accounts" data-id="'+a.id+'">'+ico('edit',11)+' Edit</button>';
     h+='<button class="btn btn-danger btn-sm" data-action="rem-item" aria-label="Remove" data-key="accounts" data-id="'+a.id+'">'+ico('trash',11)+' Remove</button></div>';
     h+='</div>';
   });
@@ -786,6 +814,7 @@ function renderCards(){
     h+='<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">';
     h+='<div><div style="font-size:15px;font-weight:700">'+esc(c.nickname||c.bank)+'</div>';
     h+='<div style="font-size:11px;color:var(--t2);display:flex;gap:5px;align-items:center">'+esc(c.bank)+'<span class="badge badge-b" style="font-size:9px">'+esc(ccur)+'</span></div></div>';
+    h+='<button class="btn btn-edit btn-icon btn-sm" data-action="edit-item" data-key="cards" data-id="'+c.id+'" aria-label="Edit">'+ico('edit',11)+'</button>';
     h+='<button class="btn btn-danger btn-icon btn-sm" data-action="rem-item" aria-label="Remove" data-key="cards" data-id="'+c.id+'">'+ico('trash',11)+'</button></div>';
     h+='<div class="mono" style="font-size:22px;font-weight:800;color:var(--rd)">'+fmtf(+c.outstanding||0,ccur)+'</div>';
     if(ccur!==cur)h+='<div style="font-size:11px;color:var(--t3)">≈ '+fmtf(toBase(+c.outstanding||0,ccur),cur)+'</div>';
@@ -809,7 +838,8 @@ function renderExpenses(){
   var d=app.data,cur=d.settings.currency||'AED';
   var tot=d.expenses.reduce(function(s,e){
     var a=toBase(+e.amount||0,e.currency);
-    return s+(e.type==='daily'?a*30:e.type==='weekly'?a*4.33:e.type==='once'?0:a);
+    var isTrackedDailyH=e.type==='daily'&&e.date;
+    return s+(isTrackedDailyH?0:e.type==='daily'?a*30:e.type==='weekly'?a*4.33:e.type==='once'?0:a);
   },0);
   // Filter: type or necessity
   var list=d.expenses.filter(function(e){
@@ -818,7 +848,10 @@ function renderExpenses(){
     return e.type===app.expFil;
   });
   var h='<div class="pe"><div class="page-head"><div><div class="ph-title">Expenses</div><div class="ph-sub">'+fmt(tot,cur)+' / month</div></div>';
-  h+='<div class="ph-right"><button class="btn btn-primary" data-action="open-modal" data-modal="expense">'+ico('plus',13)+' Add</button></div></div>';
+  h+='<div class="ph-right">';
+  h+='<button class="btn btn-ghost btn-sm" data-action="open-modal" data-modal="expense-today" style="font-size:12px">📅 Track Today</button>';
+  h+='<button class="btn btn-primary" data-action="open-modal" data-modal="expense">'+ico('plus',13)+' Add</button>';
+  h+='</div></div>';
   h+='<div class="page-body"><div class="pill-tabs">';
   [{k:'all',l:'All'},{k:'monthly',l:'Monthly'},{k:'daily',l:'Daily'},{k:'weekly',l:'Weekly'},{k:'once',l:'One-time'},{k:'need',l:'✅ Need'},{k:'want',l:'⚠️ Want'},{k:'avoid',l:'🚫 Avoidable'}].forEach(function(f){
     h+='<button class="pill-tab'+(app.expFil===f.k?' active':'')+'" data-action="exp-filter" data-filter="'+f.k+'">'+f.l+'</button>';
@@ -834,11 +867,22 @@ function renderExpenses(){
     h+='<div class="item-row"><div class="icon-pill" style="background:'+cl+'22">'+ico('layers',14,cl)+'</div>';
     h+='<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;margin-bottom:2px">'+esc(e.name)+'</div>';
     var necCfg=NEC_CFG[e.necessity||'need']||NEC_CFG.need;
-    h+='<div style="display:flex;gap:4px;flex-wrap:wrap"><span class="badge badge-m">'+esc(e.cat)+'</span><span class="badge badge-m">'+(EXP_TYPE_LBL[e.type]||e.type)+'</span><span class="badge '+necCfg.badge+'">'+necCfg.label+'</span>'+curBadge(ecur)+'</div></div>';
+    var expAcc=e.accountId?d.accounts.find(function(a){return a.id===e.accountId;}):null;
+    h+='<div style="display:flex;gap:4px;flex-wrap:wrap">';
+    h+='<span class="badge badge-m">'+esc(e.cat)+'</span><span class="badge badge-m">'+(EXP_TYPE_LBL[e.type]||e.type)+'</span><span class="badge '+necCfg.badge+'">'+necCfg.label+'</span>'+curBadge(ecur);
+    if(expAcc)h+='<span class="badge badge-b" style="font-size:9px">🏦 '+esc(expAcc.name)+'</span>';
+    h+='</div></div>';
     h+='<div style="text-align:right;flex-shrink:0"><div class="mono" style="font-size:14px;font-weight:700">'+fmtf(a,ecur)+'</div>';
     if(ecur!==cur)h+='<div style="font-size:10px;color:var(--t3)">≈ '+fmtf(aBase,cur)+'</div>';
-    if(e.type!=='monthly'&&e.type!=='once')h+='<div style="font-size:10px;color:var(--t2)">'+fmtf(mBase,cur)+'/mo</div>';
-    h+='</div><button class="btn btn-danger btn-icon btn-sm" data-action="rem-item" aria-label="Remove" data-key="expenses" data-id="'+e.id+'">'+ico('trash',12)+'</button></div>';
+    var isTracked=e.type==='daily'&&e.date;
+    if(!isTracked&&e.type!=='monthly'&&e.type!=='once')h+='<div style="font-size:10px;color:var(--t2)">'+fmtf(mBase,cur)+'/mo</div>';
+    if(isTracked)h+='<div style="font-size:10px;color:var(--ac)">✓ Tracked</div>';
+    if(e.date)h+='<div style="font-size:10px;color:var(--t3)">'+esc(e.date)+'</div>';
+    h+='</div>';
+    h+='<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">';
+    h+='<button class="btn btn-edit btn-icon btn-sm" data-action="edit-item" data-key="expenses" data-id="'+e.id+'" aria-label="Edit">'+ico('edit',11)+'</button>';
+    h+='<button class="btn btn-danger btn-icon btn-sm" data-action="rem-item" aria-label="Remove" data-key="expenses" data-id="'+e.id+'">'+ico('trash',12)+'</button>';
+    h+='</div></div>';
   });
   h+='</div></div>';
   return h;
@@ -862,7 +906,11 @@ function renderIncome(){
     h+='<div style="display:flex;gap:4px;flex-wrap:wrap"><span class="badge '+(i.recurring?'badge-g':'badge-m')+'">'+(i.recurring?'Recurring':'One-time')+'</span><span class="badge badge-m">'+esc(i.freq)+'</span>'+curBadge(icur)+'</div></div>';
     h+='<div style="text-align:right;flex-shrink:0"><div class="mono" style="font-size:14px;font-weight:700;color:var(--ac)">'+fmtf(+i.amount||0,icur)+'</div>';
     if(icur!==cur)h+='<div style="font-size:10px;color:var(--t3)">≈ '+fmtf(iBase,cur)+'</div>';
-    h+='</div><button class="btn btn-danger btn-icon btn-sm" data-action="rem-item" aria-label="Remove" data-key="income" data-id="'+i.id+'">'+ico('trash',12)+'</button></div>';
+    h+='</div>';
+    h+='<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">';
+    h+='<button class="btn btn-edit btn-icon btn-sm" data-action="edit-item" data-key="income" data-id="'+i.id+'" aria-label="Edit">'+ico('edit',11)+'</button>';
+    h+='<button class="btn btn-danger btn-icon btn-sm" data-action="rem-item" aria-label="Remove" data-key="income" data-id="'+i.id+'">'+ico('trash',12)+'</button>';
+    h+='</div></div>';
   });
   h+='</div></div>';
   return h;
@@ -891,10 +939,11 @@ function renderInvestments(){
     h+='<div class="icon-pill" style="background:'+cl+'22">'+ico('trend',14,cl)+'</div>';
     h+='<div style="flex:1"><div style="font-size:13px;font-weight:700">'+esc(i.name)+'</div>';
     h+='<div style="display:flex;gap:4px;margin-top:2px;flex-wrap:wrap"><span class="badge badge-m">'+esc(i.type)+'</span>';
-    if(+i.sip>0)h+='<span class="badge badge-p">SIP '+fmtf(+i.sip,icur)+'/mo</span>';
+    if(+i.sip>0)h+='<span class="badge badge-p">'+(i.type==='Chit Fund'?'Contribution':'SIP')+' '+fmtf(+i.sip,icur)+'/mo</span>';
     if(linkedAcc)h+='<span class="badge badge-b" style="font-size:9px">🏦 '+esc(linkedAcc.name)+'</span>';
     h+=curBadge(icur)+'</div></div>';
     h+='<div class="mono" style="font-size:13px;font-weight:700;color:'+(g>=0?'var(--ac)':'var(--rd)')+'">'+(g>=0?'+':'')+gpp.toFixed(1)+'%</div>';
+    h+='<button class="btn btn-edit btn-icon btn-sm" data-action="edit-item" data-key="investments" data-id="'+i.id+'" aria-label="Edit">'+ico('edit',11)+'</button>';
     h+='<button class="btn btn-danger btn-icon btn-sm" data-action="rem-item" aria-label="Remove" data-key="investments" data-id="'+i.id+'">'+ico('trash',11)+'</button></div>';
     h+='<div class="g3">';
     h+='<div><div style="font-size:10px;color:var(--t2);margin-bottom:2px">Invested</div><div class="mono" style="font-size:12px;font-weight:700">'+fmtf(iv,icur)+'</div>';
@@ -952,6 +1001,7 @@ function renderTasks(){
     h+='<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:500;'+(task.done?'text-decoration:line-through;color:var(--t2)':'color:var(--tx)')+'">'+esc(task.title)+'</div>';
     h+='<div style="font-size:11px;color:var(--t3);margin-top:1px">'+esc(task.cat)+(ds?' · '+ds:'')+'</div></div>';
     h+='<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:'+pc+';flex-shrink:0;margin-right:3px"></span>';
+    h+='<button class="btn btn-edit btn-icon btn-sm" data-action="edit-item" data-key="tasks" data-id="'+task.id+'" aria-label="Edit">'+ico('edit',11)+'</button>';
     h+='<button class="btn btn-danger btn-icon btn-sm" data-action="rem-item" aria-label="Remove" data-key="tasks" data-id="'+task.id+'">'+ico('trash',11)+'</button>';
     h+='</div>';
   });
@@ -1054,7 +1104,7 @@ function renderCalendar(){
   }else{
     // Show month summary
     var monthTotal={income:0,expense:0,card:0};
-    for(var dd=1;dd<=days;dd++){(ev[dd]||[]).forEach(function(e){if(e.type==='income')monthTotal.income+=e.amount;else if(e.type==='expense')monthTotal.expense+=e.amount;else if(e.type==='card')monthTotal.card+=e.amount;});}
+    for(var dd=1;dd<=days;dd++){(ev[dd]||[]).forEach(function(e){if(e.type==='income')monthTotal.income+=e.amount;else if(e.type==='expense'&&!e.estimate)monthTotal.expense+=e.amount;else if(e.type==='card')monthTotal.card+=e.amount;});}
     h+='<div style="font-size:13px;font-weight:700;margin-bottom:12px">'+MNFULL[mo]+' Summary</div>';
     h+='<div class="cal-event-row"><div class="cal-ev-dot" style="background:var(--ac)"></div><div style="flex:1;font-size:12px;color:var(--t2)">Income</div><div class="mono" style="font-size:12px;font-weight:700;color:var(--ac)">'+fmt(monthTotal.income,cur)+'</div></div>';
     h+='<div class="cal-event-row"><div class="cal-ev-dot" style="background:var(--am)"></div><div style="flex:1;font-size:12px;color:var(--t2)">Expenses</div><div class="mono" style="font-size:12px;font-weight:700;color:var(--am)">'+fmt(monthTotal.expense,cur)+'</div></div>';
@@ -1096,7 +1146,8 @@ function renderReports(){
   var avoidList=[];
   d.expenses.forEach(function(e){
     var a=toBase(+e.amount||0,e.currency);
-    var mo=e.type==='daily'?a*30:e.type==='weekly'?a*4.33:e.type==='once'?0:a;
+    var isTrackedDailyR=e.type==='daily'&&e.date;
+    var mo=isTrackedDailyR?0:(e.type==='daily'?a*30:e.type==='weekly'?a*4.33:e.type==='once'?0:a);
     var nec=e.necessity||'need';
     necTotals[nec]=(necTotals[nec]||0)+mo;
     if(nec==='avoid')avoidList.push({name:e.name,mo:mo,cur:cur});
@@ -1156,7 +1207,7 @@ function renderSettings(){
   h+='<div style="font-size:11px;color:var(--t2)">'+_pLabel+'</div></div>';
   h+='<button class="btn btn-ghost btn-sm" data-action="sign-out" style="margin-left:auto">Sign Out</button>';
   h+='</div>';
-  h+='<div style="font-size:14px;font-weight:700;margin-bottom:14px">👤 Display Name</div>';;
+  h+='<div style="font-size:14px;font-weight:700;margin-bottom:14px">👤 Display Name</div>';
   h+='<div class="frow" style="margin-bottom:12px">';
   h+='<div class="fg"><label class="fl">Your Name</label><input id="set-name" value="'+esc(s.name||'')+'" placeholder="e.g. Kartik"></div>';
   h+='<div class="fg"><label class="fl">Display Currency</label><select id="set-cur">';
@@ -1209,46 +1260,52 @@ function mHtml(title,body){
   return '<div class="mh"><div class="mt">'+esc(title)+'</div><button class="btn btn-ghost btn-icon" data-action="close-modal" aria-label="Close">'+ico('x')+'</button></div>'+body;
 }
 
-function renderAccountModal(){
-  var base=app.data.settings.currency||'AED';
-  return mHtml('Add Account',
-    '<div class="fg"><label class="fl">Bank / Wallet Name</label><input id="m-name" placeholder="e.g. Emirates NBD"></div>'+
-    '<div class="frow"><div class="fg"><label class="fl">Type</label><select id="m-type"><option>Savings</option><option>Current</option><option>Cash</option><option>Investment</option></select></div>'+
+function renderAccountModal(item){
+  var base=item?item.currency:(app.data.settings.currency||'AED');
+  var types=['Savings','Current','Cash','Investment'];
+  return mHtml(item?'Edit Account':'Add Account',
+    '<div class="fg"><label class="fl">Bank / Wallet Name</label><input id="m-name" placeholder="e.g. Emirates NBD" value="'+esc(item?item.name:'')+'"></div>'+
+    '<div class="frow"><div class="fg"><label class="fl">Type</label><select id="m-type">'+types.map(function(t){return '<option'+(item&&item.type===t?' selected':'')+'>'+t+'</option>';}).join('')+'</select></div>'+
     '<div class="fg"><label class="fl">Currency</label>'+curSelect('m-currency',base)+'</div></div>'+
-    '<div class="fg"><label class="fl">Balance</label><input id="m-balance" type="number" placeholder="0"></div>'+
+    '<div class="fg"><label class="fl">Balance</label><input id="m-balance" type="number" placeholder="0" value="'+esc(item?item.balance:'')+'"></div>'+
     '<div class="fg"><label class="fl">Color</label><div style="display:flex;gap:6px;margin-top:4px" id="acc-colors">'+
-    ACC_CLRS.map(function(c,i){return '<div data-action="pick-color" data-color="'+c+'" style="width:22px;height:22px;border-radius:50%;background:'+c+';cursor:pointer;border:'+(i===0?'3px solid var(--tx)':'2px solid transparent')+'"></div>';}).join('')+
+    ACC_CLRS.map(function(c){var isSel=item?item.color===c:ACC_CLRS[0]===c;return '<div data-action="pick-color" data-color="'+c+'" style="width:22px;height:22px;border-radius:50%;background:'+c+';cursor:pointer;border:'+(isSel?'3px solid var(--tx)':'2px solid transparent')+'"></div>';}).join('')+
     '</div></div>'+
     '<div class="mf"><button class="btn btn-ghost" data-action="close-modal">Cancel</button><button class="btn btn-primary" data-action="save-account">Save</button></div>'
   );
 }
 
-function renderCardModal(){
-  var base=app.data.settings.currency||'AED';
-  return mHtml('Add Credit Card',
-    '<div class="frow"><div class="fg"><label class="fl">Bank</label><input id="m-bank" placeholder="Emirates NBD"></div>'+
-    '<div class="fg"><label class="fl">Nickname</label><input id="m-nick" placeholder="World Mastercard"></div></div>'+
+function renderCardModal(item){
+  var base=item?item.currency:(app.data.settings.currency||'AED');
+  return mHtml(item?'Edit Card':'Add Credit Card',
+    '<div class="frow"><div class="fg"><label class="fl">Bank</label><input id="m-bank" placeholder="Emirates NBD" value="'+esc(item?item.bank:'')+'"></div>'+
+    '<div class="fg"><label class="fl">Nickname</label><input id="m-nick" placeholder="World Mastercard" value="'+esc(item?item.nickname:'')+'"></div></div>'+
     '<div class="frow"><div class="fg"><label class="fl">Currency</label>'+curSelect('m-currency',base)+'</div>'+
-    '<div class="fg"><label class="fl">Due Date (day of month)</label><input id="m-due" type="number" placeholder="15" min="1" max="31"></div></div>'+
-    '<div class="frow"><div class="fg"><label class="fl">Credit Limit</label><input id="m-limit" type="number" placeholder="0"></div>'+
-    '<div class="fg"><label class="fl">Outstanding Balance</label><input id="m-out" type="number" placeholder="0"></div></div>'+
-    '<div class="fg"><label class="fl">Minimum Due</label><input id="m-min" type="number" placeholder="0"></div>'+
+    '<div class="fg"><label class="fl">Due Date (day of month)</label><input id="m-due" type="number" placeholder="15" min="1" max="31" value="'+esc(item?item.due:'')+'"></div></div>'+
+    '<div class="frow"><div class="fg"><label class="fl">Credit Limit</label><input id="m-limit" type="number" placeholder="0" value="'+esc(item?item.limit:'')+'"></div>'+
+    '<div class="fg"><label class="fl">Outstanding Balance</label><input id="m-out" type="number" placeholder="0" value="'+esc(item?item.outstanding:'')+'"></div></div>'+
+    '<div class="fg"><label class="fl">Minimum Due</label><input id="m-min" type="number" placeholder="0" value="'+esc(item?item.minDue:'')+'"></div>'+
     '<div class="mf"><button class="btn btn-ghost" data-action="close-modal">Cancel</button><button class="btn btn-primary" data-action="save-card">Save</button></div>'
   );
 }
 
-function renderExpenseModal(editNec){
-  var base=app.data.settings.currency||'AED';
-  var cats=allCats().map(function(c){return '<option value="'+esc(c.name)+'">'+esc(c.name)+'</option>';}).join('');
-  var nec=editNec||'need';
-  return mHtml('Add Expense',
-    '<div class="fg"><label class="fl">Name</label><input id="m-name" placeholder="e.g. Rent, Netflix"></div>'+
-    '<div class="frow"><div class="fg"><label class="fl">Amount</label><input id="m-amount" type="number" placeholder="0"></div>'+
+function renderExpenseModal(item){
+  // item = null (new) or expense object (edit)
+  var base=item?item.currency:(app.data.settings.currency||'AED');
+  var cats=allCats().map(function(c){return '<option value="'+esc(c.name)+'"'+(item&&item.cat===c.name?' selected':'')+'>'+esc(c.name)+'</option>';}).join('');
+  var nec=item?item.necessity||'need':'need';
+  var expType=item?item.type||'monthly':'monthly';
+  var accOpts='<option value="">None (Cash)</option>'+app.data.accounts.map(function(a){return '<option value="'+a.id+'"'+(item&&item.accountId===a.id?' selected':'')+'>'+esc(a.name)+'</option>';}).join('');
+  var today=new Date().toISOString().split('T')[0];
+  return mHtml(item?'Edit Expense':'Add Expense',
+    '<div class="fg"><label class="fl">Name</label><input id="m-name" placeholder="e.g. Rent, Netflix" value="'+esc(item?item.name:'')+'"></div>'+
+    '<div class="frow"><div class="fg"><label class="fl">Amount</label><input id="m-amount" type="number" placeholder="0" value="'+esc(item?item.amount:'')+'"></div>'+
     '<div class="fg"><label class="fl">Currency</label>'+curSelect('m-currency',base)+'</div></div>'+
     '<div class="frow"><div class="fg"><label class="fl">Category</label><select id="m-cat">'+cats+'</select></div>'+
-    '<div class="fg"><label class="fl">Type</label><select id="m-type"><option value="monthly">Monthly</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="once">One-time</option></select></div></div>'+
-    '<div class="fg" id="date-wrap" style="display:none"><label class="fl">Date</label><input id="m-date" type="date"></div>'+
-    '<div class="fg"><label class="fl">Necessity — was this spending necessary?</label>'+
+    '<div class="fg"><label class="fl">Type</label><select id="m-type"><option value="monthly"'+(expType==='monthly'?' selected':'')+'>Monthly</option><option value="daily"'+(expType==='daily'?' selected':'')+'>Daily</option><option value="weekly"'+(expType==='weekly'?' selected':'')+'>Weekly</option><option value="once"'+(expType==='once'?' selected':'')+'>One-time</option></select></div></div>'+
+    '<div class="fg" id="date-wrap" style="display:'+(expType==='once'||expType==='daily'?'block':'none')+'"><label class="fl" id="m-date-lbl">'+(expType==='daily'?'Entry Date':'Date')+'</label><input id="m-date" type="date" value="'+esc(item&&item.date?item.date:(expType==='once'||expType==='daily'?today:''))+'"></div>'+
+    '<div class="fg"><label class="fl">Paid From Account</label><select id="m-account">'+accOpts+'</select></div>'+
+    '<div class="fg"><label class="fl">Necessity</label>'+
     '<div class="nec-toggle">'+
     '<button class="nec-btn'+(nec==='need'?' active-need':'')+'" data-action="nec-pick" data-nec="need" id="nec-need">✅ Need</button>'+
     '<button class="nec-btn'+(nec==='want'?' active-want':'')+'" data-action="nec-pick" data-nec="want" id="nec-want">⚠️ Want</button>'+
@@ -1258,49 +1315,50 @@ function renderExpenseModal(editNec){
   );
 }
 
-function renderIncomeModal(){
-  var base=app.data.settings.currency||'AED';
-  return mHtml('Add Income',
-    '<div class="fg"><label class="fl">Source</label><input id="m-source" placeholder="e.g. Monthly Salary"></div>'+
-    '<div class="frow"><div class="fg"><label class="fl">Amount</label><input id="m-amount" type="number" placeholder="0"></div>'+
+function renderIncomeModal(item){
+  var base=item?item.currency:(app.data.settings.currency||'AED');
+  var freq=item?item.freq||'monthly':'monthly';
+  return mHtml(item?'Edit Income':'Add Income',
+    '<div class="fg"><label class="fl">Source</label><input id="m-source" placeholder="e.g. Monthly Salary" value="'+esc(item?item.source:'')+'"></div>'+
+    '<div class="frow"><div class="fg"><label class="fl">Amount</label><input id="m-amount" type="number" placeholder="0" value="'+esc(item?item.amount:'')+'"></div>'+
     '<div class="fg"><label class="fl">Currency</label>'+curSelect('m-currency',base)+'</div></div>'+
-    '<div class="fg"><label class="fl">Frequency</label><select id="m-freq"><option value="monthly">Monthly</option><option value="weekly">Weekly</option><option value="once">One-time</option></select></div>'+
+    '<div class="fg"><label class="fl">Frequency</label><select id="m-freq"><option value="monthly"'+(freq==='monthly'?' selected':'')+'>Monthly</option><option value="weekly"'+(freq==='weekly'?' selected':'')+'>Weekly</option><option value="once"'+(freq==='once'?' selected':'')+'>One-time</option></select></div>'+
     '<div style="display:flex;align-items:center;gap:7px;margin-bottom:10px">'+
-    '<input type="checkbox" id="m-rec" checked style="width:auto;cursor:pointer">'+
+    '<input type="checkbox" id="m-rec"'+(item&&!item.recurring?'':' checked')+' style="width:auto;cursor:pointer">'+
     '<label for="m-rec" style="font-size:12px;color:var(--t2);cursor:pointer">Recurring income</label></div>'+
     '<div class="mf"><button class="btn btn-ghost" data-action="close-modal">Cancel</button><button class="btn btn-primary" data-action="save-income">Save</button></div>'
   );
 }
 
-function renderInvestmentModal(){
-  var base=app.data.settings.currency||'AED';
-  var types=['Mutual Fund','Stock','Crypto','Gold','FD','Chit Fund'].map(function(t){return '<option>'+t+'</option>';}).join('');
-  var accOpts='<option value="">None</option>'+app.data.accounts.map(function(a){return '<option value="'+a.id+'">'+esc(a.name)+'</option>';}).join('');
-  return mHtml('Add Investment',
-    '<div class="fg"><label class="fl">Name</label><input id="m-name" placeholder="e.g. Axis Bluechip Fund"></div>'+
+function renderInvestmentModal(item){
+  var base=item?item.currency:(app.data.settings.currency||'AED');
+  var types=['Mutual Fund','Stock','Crypto','Gold','FD','Chit Fund'].map(function(t){return '<option'+(item&&item.type===t?' selected':'')+'>'+t+'</option>';}).join('');
+  var accOpts='<option value="">None</option>'+app.data.accounts.map(function(a){return '<option value="'+a.id+'"'+(item&&item.accountId===a.id?' selected':'')+'>'+esc(a.name)+'</option>';}).join('');
+  return mHtml(item?'Edit Investment':'Add Investment',
+    '<div class="fg"><label class="fl">Name</label><input id="m-name" placeholder="e.g. Axis Bluechip Fund" value="'+(item?esc(item.name):'')+'"></div>'+
     '<div class="frow"><div class="fg"><label class="fl">Type</label><select id="m-type" onchange="invTypeChange()">'+types+'</select></div>'+
     '<div class="fg"><label class="fl">Currency</label>'+curSelect('m-currency',base)+'</div></div>'+
     '<div class="fg"><label class="fl">Money Deducted From Account</label><select id="m-account">'+accOpts+'</select></div>'+
     // Standard fields (Mutual Fund, Stock, Crypto, Gold)
     '<div id="inv-std-fields">'+
-    '<div class="fg"><label class="fl">Monthly SIP / Contribution</label><input id="m-std-sip" type="number" placeholder="0" value="0"></div>'+
-    '<div class="frow"><div class="fg"><label class="fl">Total Invested</label><input id="m-std-invested" type="number" placeholder="0"></div>'+
-    '<div class="fg"><label class="fl">Current Value</label><input id="m-std-current" type="number" placeholder="0"></div></div>'+
+    '<div class="fg"><label class="fl">Monthly SIP / Contribution</label><input id="m-std-sip" type="number" placeholder="0" value="'+(item&&item.sip||'0')+'"></div>'+
+    '<div class="frow"><div class="fg"><label class="fl">Total Invested</label><input id="m-std-invested" type="number" placeholder="0" value="'+(item&&item.invested||'')+'"></div>'+
+    '<div class="fg"><label class="fl">Current Value</label><input id="m-std-current" type="number" placeholder="0" value="'+(item&&item.current||'')+'"></div></div>'+
     '</div>'+
     // Chit Fund specific
     '<div id="inv-chit-fields" style="display:none">'+
-    '<div class="frow"><div class="fg"><label class="fl">Chit Value (Total)</label><input id="m-chit-value" type="number" placeholder="e.g. 500000"></div>'+
-    '<div class="fg"><label class="fl">Monthly Contribution</label><input id="m-chit-sip" type="number" placeholder="e.g. 5000" value="0"></div></div>'+
-    '<div class="frow"><div class="fg"><label class="fl">Total Paid So Far</label><input id="m-chit-invested" type="number" placeholder="0"></div>'+
-    '<div class="fg"><label class="fl">Bid Won Amount (if any)</label><input id="m-bid-won" type="number" placeholder="0" value="0"></div></div>'+
-    '<div class="fg"><label class="fl">Dividend Saved (discount on bid)</label><input id="m-dividend" type="number" placeholder="0" value="0"></div>'+
+    '<div class="frow"><div class="fg"><label class="fl">Chit Value (Total)</label><input id="m-chit-value" type="number" placeholder="e.g. 500000" value="'+(item&&item.chitValue||'')+'"></div>'+
+    '<div class="fg"><label class="fl">Monthly Contribution</label><input id="m-chit-sip" type="number" placeholder="e.g. 5000" value="'+(item&&item.sip||'0')+'"></div></div>'+
+    '<div class="frow"><div class="fg"><label class="fl">Total Paid So Far</label><input id="m-chit-invested" type="number" placeholder="0" value="'+(item&&item.invested||'')+'"></div>'+
+    '<div class="fg"><label class="fl">Bid Won Amount (if any)</label><input id="m-bid-won" type="number" placeholder="0" value="'+(item&&item.bidWon||'0')+'"></div></div>'+
+    '<div class="fg"><label class="fl">Dividend Saved (discount on bid)</label><input id="m-dividend" type="number" placeholder="0" value="'+(item&&item.dividend||'0')+'"></div>'+
     '</div>'+
     // FD specific
     '<div id="inv-fd-fields" style="display:none">'+
-    '<div class="frow"><div class="fg"><label class="fl">Principal Amount</label><input id="m-fd-invested" type="number" placeholder="0"></div>'+
-    '<div class="fg"><label class="fl">Maturity Value</label><input id="m-fd-current" type="number" placeholder="0"></div></div>'+
-    '<div class="frow"><div class="fg"><label class="fl">Interest Rate (%)</label><input id="m-rate" type="number" step="0.1" placeholder="e.g. 7.5"></div>'+
-    '<div class="fg"><label class="fl">Maturity Date</label><input id="m-maturity" type="date"></div></div>'+
+    '<div class="frow"><div class="fg"><label class="fl">Principal Amount</label><input id="m-fd-invested" type="number" placeholder="0" value="'+(item&&item.invested||'')+'"></div>'+
+    '<div class="fg"><label class="fl">Maturity Value</label><input id="m-fd-current" type="number" placeholder="0" value="'+(item&&item.current||'')+'"></div></div>'+
+    '<div class="frow"><div class="fg"><label class="fl">Interest Rate (%)</label><input id="m-rate" type="number" step="0.1" placeholder="e.g. 7.5" value="'+(item&&item.rate||'')+'"></div>'+
+    '<div class="fg"><label class="fl">Maturity Date</label><input id="m-maturity" type="date" value="'+(item&&item.maturityDate||'')+'"></div></div>'+
     '</div>'+
     '<div class="mf"><button class="btn btn-ghost" data-action="close-modal">Cancel</button><button class="btn btn-primary" data-action="save-investment">Save</button></div>'
   );
@@ -1318,13 +1376,15 @@ window.invTypeChange=function invTypeChange(){
   if(fd)fd.style.display=v==='FD'?'block':'none';
 };
 
-function renderTaskModal(){
-  var cats=['Finance','Investment','Planning','Bills','Other'].map(function(c){return '<option>'+c+'</option>';}).join('');
-  return mHtml('Add Task',
-    '<div class="fg"><label class="fl">Task</label><input id="m-title" placeholder="e.g. Pay credit card"></div>'+
+function renderTaskModal(item){
+  var taskCats=['Finance','Investment','Planning','Bills','Other'];
+  var cats=taskCats.map(function(c){return '<option'+(item&&item.cat===c?' selected':'')+'>'+c+'</option>';}).join('');
+  var pri=item?item.pri||'medium':'medium';
+  return mHtml(item?'Edit Task':'Add Task',
+    '<div class="fg"><label class="fl">Task</label><input id="m-title" placeholder="e.g. Pay credit card" value="'+esc(item?item.title:'')+'"></div>'+
     '<div class="frow"><div class="fg"><label class="fl">Category</label><select id="m-cat">'+cats+'</select></div>'+
-    '<div class="fg"><label class="fl">Priority</label><select id="m-pri"><option value="high">High</option><option value="medium" selected>Medium</option><option value="low">Low</option></select></div></div>'+
-    '<div class="fg"><label class="fl">Due Date</label><input id="m-due" type="date"></div>'+
+    '<div class="fg"><label class="fl">Priority</label><select id="m-pri"><option value="high"'+(pri==='high'?' selected':'')+'>High</option><option value="medium"'+(pri==='medium'?' selected':'')+'>Medium</option><option value="low"'+(pri==='low'?' selected':'')+'>Low</option></select></div></div>'+
+    '<div class="fg"><label class="fl">Due Date</label><input id="m-due" type="date" value="'+esc(item?item.due:'')+'"></div>'+
     '<div class="mf"><button class="btn btn-ghost" data-action="close-modal">Cancel</button><button class="btn btn-primary" data-action="save-task">Save</button></div>'
   );
 }
@@ -1351,7 +1411,8 @@ function initSpendChart(canvasId,legendId){
   var cats={};
   app.data.expenses.forEach(function(e){
     var v=toBase(+e.amount||0,e.currency);
-    var m=e.type==='daily'?v*30:e.type==='weekly'?v*4.33:e.type==='once'?0:v;
+    var isTrackedDailyC=e.type==='daily'&&e.date;
+    var m=isTrackedDailyC?0:(e.type==='daily'?v*30:e.type==='weekly'?v*4.33:e.type==='once'?0:v);
     cats[e.cat||'Other']=(cats[e.cat||'Other']||0)+m;
   });
   var lbs=Object.keys(cats),vs=lbs.map(function(k){return cats[k];});
@@ -1428,7 +1489,8 @@ function renderCategories(){
 function renderLedger(){
   var d=app.data,cur=d.settings.currency||'AED';
   var ledger=d.ledger||[];
-  // Totals
+  var today=new Date().toISOString().split('T')[0];
+  // Calculate totals
   var totalLent=0,totalOwed=0;
   ledger.forEach(function(person){
     var net=0;
@@ -1441,27 +1503,22 @@ function renderLedger(){
       else if(tx.type==='borrowed')net-=a;
       else if(tx.type==='partial')net-=a;
     });
-    if(net>0)totalLent+=net;
-    else totalOwed+=Math.abs(net);
+    if(net>0)totalLent+=net; else totalOwed+=Math.abs(net);
   });
 
-  var h='<div class="pe"><div class="page-head"><div><div class="ph-title">Ledger</div><div class="ph-sub">Money you lent & borrowed</div></div>';
+  var h='<div class="pe"><div class="page-head"><div><div class="ph-title">Ledger</div><div class="ph-sub">Track money you lend & borrow</div></div>';
   h+='<div class="ph-right"><button class="btn btn-primary" data-action="open-modal" data-modal="ledger-person">'+ico('plus',13)+' Add Person</button></div></div>';
   h+='<div class="page-body">';
   h+='<div class="g2" style="margin-bottom:13px">';
   h+='<div class="stat-box"><div class="stat-box-lbl">You are owed 💚</div><div class="stat-box-val green">'+fmt(totalLent,cur)+'</div></div>';
   h+='<div class="stat-box"><div class="stat-box-lbl">You owe 🔴</div><div class="stat-box-val red">'+fmt(totalOwed,cur)+'</div></div>';
   h+='</div>';
-
   if(!ledger.length){
     h+='<div class="empty"><div class="empty-ico">🤝</div><div class="empty-title">No entries yet</div><div class="empty-sub">Track money you lend or borrow from friends and family.</div></div>';
   }
-
   ledger.forEach(function(person){
     var txs=person.transactions||[];
-    // Calculate net balance for this person
     var net=0;
-    // Chronological: only count transactions after the last 'settled' entry
     var sorted1=txs.slice().sort(function(a,b){return (a.date||'').localeCompare(b.date||'');});
     var lastSettled1=-1;
     sorted1.forEach(function(tx,i){if(tx.type==='settled')lastSettled1=i;});
@@ -1474,51 +1531,60 @@ function renderLedger(){
     var netClr=net>0?'var(--ac)':net<0?'var(--rd)':'var(--t2)';
     var netLabel=net>0?'Owes you '+fmt(net,cur):net<0?'You owe '+fmt(Math.abs(net),cur):'All settled ✓';
     var isSettled=net===0;
+    var isOpen=!!app.ledgerOpen[person.id];
 
-    h+='<div class="card" style="margin-bottom:10px">';
-    // Person header
-    h+='<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">';
-    h+='<div style="width:36px;height:36px;border-radius:50%;background:'+(net>0?'var(--acd)':net<0?'var(--rdd)':'var(--el)')+';display:flex;align-items:center;justify-content:center;font-family:Syne,sans-serif;font-size:14px;font-weight:700;color:'+netClr+';flex-shrink:0">'+esc(person.name[0].toUpperCase())+'</div>';
-    h+='<div style="flex:1"><div style="font-size:14px;font-weight:700">'+esc(person.name)+'</div>';
-    h+='<div class="mono" style="font-size:12px;font-weight:700;color:'+netClr+'">'+netLabel+'</div></div>';
-    h+='<div style="display:flex;gap:6px">';
-    h+='<button class="btn btn-primary btn-sm" data-action="ledger-add-tx" data-pid="'+person.id+'">+ Entry</button>';
-    if(!isSettled)h+='<button class="btn btn-ghost btn-sm" data-action="ledger-settle" data-pid="'+person.id+'">Settle</button>';
-    h+='<button class="btn btn-danger btn-icon btn-sm" data-action="rem-item" data-key="ledger" data-id="'+person.id+'" aria-label="Remove">'+ico('trash',11)+'</button>';
+    h+='<div class="card" style="margin-bottom:10px;padding:0;overflow:hidden">';
+    // ── Clickable header ──
+    h+='<div data-action="ledger-toggle" data-pid="'+person.id+'" class="ledger-hdr">';
+    h+='<div style="width:38px;height:38px;border-radius:50%;background:'+(net>0?'var(--acd)':net<0?'var(--rdd)':'var(--el)')+';display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:'+netClr+';flex-shrink:0;font-family:Syne,sans-serif">'+esc(person.name[0].toUpperCase())+'</div>';
+    h+='<div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:700">'+esc(person.name)+'</div>';
+    h+='<div class="mono" style="font-size:12px;font-weight:600;color:'+netClr+'">'+netLabel+'</div></div>';
+    h+='<div style="display:flex;align-items:center;gap:8px">';
+    h+='<span id="lc-'+person.id+'" style="color:var(--t3);transition:transform .2s;display:inline-block;transform:'+(isOpen?'rotate(180deg)':'rotate(0deg)')+'"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></span>';
     h+='</div></div>';
+
+    // ── Expandable body ──
+    h+='<div id="lb-'+person.id+'" style="display:'+(isOpen?'block':'none')+';border-top:1px solid var(--bds)">';
+    // Action buttons row
+    h+='<div style="display:flex;gap:8px;padding:12px 16px;border-bottom:1px solid var(--bds);flex-wrap:wrap">';
+    h+='<button class="btn btn-primary btn-sm" data-action="ledger-add-tx" data-pid="'+person.id+'" data-ltype="lent">↑ I Lent</button>';
+    h+='<button class="btn btn-sm" style="background:var(--rdd);color:var(--rd);border-color:transparent" data-action="ledger-add-tx" data-pid="'+person.id+'" data-ltype="borrowed">↓ I Borrowed</button>';
+    h+='<button class="btn btn-sm" style="background:var(--amd);color:var(--am);border-color:transparent" data-action="ledger-add-tx" data-pid="'+person.id+'" data-ltype="partial">↩ Repaid</button>';
+    if(!isSettled)h+='<button class="btn btn-ghost btn-sm" data-action="ledger-settle" data-pid="'+person.id+'">✓ Settle All</button>';
+    h+='<button class="btn btn-danger btn-icon btn-sm" style="margin-left:auto" data-action="rem-item" data-key="ledger" data-id="'+person.id+'" aria-label="Remove">'+ico('trash',11)+'</button>';
+    h+='</div>';
 
     // Transaction history
     if(txs.length){
-      h+='<div style="border-top:1px solid var(--bds);padding-top:10px">';
-      // Show last 5, newest first
-      var sorted=txs.slice().sort(function(a,b){return (b.date||'').localeCompare(a.date||'');});
-      sorted.slice(0,5).forEach(function(tx){
+      var sortedDesc=txs.slice().sort(function(a,b){return (b.date||'').localeCompare(a.date||'');});
+      sortedDesc.slice(0,8).forEach(function(tx){
         var txAmt=+tx.amount||0,txCur=tx.currency||cur;
         var txClr=tx.type==='lent'?'var(--ac)':tx.type==='borrowed'?'var(--rd)':tx.type==='partial'?'var(--am)':'var(--t2)';
         var txIcon=tx.type==='lent'?'↑ Lent':tx.type==='borrowed'?'↓ Borrowed':tx.type==='partial'?'↩ Repaid':'✓ Settled';
         var txDate='';try{txDate=new Date(tx.date+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'});}catch(e){}
         var linkedAcc=tx.accountId?d.accounts.find(function(a){return a.id===tx.accountId;}):null;
-        h+='<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--bds)">';
-        h+='<div style="width:6px;height:6px;border-radius:50%;background:'+txClr+';flex-shrink:0"></div>';
+        var isToday=tx.date===today;
+        h+='<div style="display:flex;align-items:center;gap:8px;padding:9px 16px;border-bottom:1px solid var(--bds)">';
+        h+='<div style="width:7px;height:7px;border-radius:50%;background:'+txClr+';flex-shrink:0"></div>';
         h+='<div style="flex:1;min-width:0">';
-        h+='<div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap">';
-        h+='<span style="font-size:11px;font-weight:700;color:'+txClr+'">'+txIcon+'</span>';
-        if(tx.note)h+='<span style="font-size:11px;color:var(--t2)">· '+esc(tx.note)+'</span>';
+        h+='<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">';
+        h+='<span style="font-size:12px;font-weight:700;color:'+txClr+'">'+txIcon+'</span>';
+        if(tx.note)h+='<span style="font-size:11px;color:var(--t2)">'+esc(tx.note)+'</span>';
+        if(isToday)h+='<span style="font-size:9px;background:var(--acd);color:var(--ac);padding:1px 5px;border-radius:99px;font-weight:700">Today</span>';
         h+='</div>';
         h+='<div style="font-size:10px;color:var(--t3);margin-top:1px">'+txDate+(linkedAcc?' · 🏦 '+esc(linkedAcc.name):'')+'</div>';
         h+='</div>';
         if(tx.type!=='settled')h+='<div class="mono" style="font-size:12px;font-weight:700;color:'+txClr+'">'+fmtf(txAmt,txCur)+'</div>';
-        h+='<button class="btn btn-danger btn-icon btn-sm" data-action="ledger-rem-tx" data-pid="'+person.id+'" data-tid="'+tx.id+'" aria-label="Remove">'+ico('trash',10)+'</button>';
+        h+='<button class="btn btn-danger btn-icon btn-sm" data-action="ledger-rem-tx" data-pid="'+person.id+'" data-tid="'+tx.id+'" aria-label="Remove" style="width:28px;height:28px;min-width:28px">'+ico('trash',10)+'</button>';
         h+='</div>';
       });
-      if(txs.length>5)h+='<div style="font-size:11px;color:var(--t3);padding-top:6px">+ '+(txs.length-5)+' older entries</div>';
-      h+='</div>';
+      if(txs.length>8)h+='<div style="font-size:11px;color:var(--t3);padding:8px 16px">+ '+(txs.length-8)+' older entries</div>';
     }else{
-      h+='<div style="font-size:12px;color:var(--t3);padding:8px 0">No transactions yet. Tap "+ Entry" to add.</div>';
+      h+='<div style="font-size:12px;color:var(--t3);padding:12px 16px">No transactions yet.</div>';
     }
     h+='</div>';
+    h+='</div>';
   });
-
   h+='</div></div>';
   return h;
 }
@@ -1530,7 +1596,7 @@ function renderLedgerPersonModal(){
   );
 }
 
-function renderLedgerTxModal(personId){
+function renderLedgerTxModal(personId,preType){
   var d=app.data,cur=d.settings.currency||'AED';
   var person=(d.ledger||[]).find(function(p){return p.id===personId;});
   if(!person)return'';
@@ -1539,10 +1605,10 @@ function renderLedgerTxModal(personId){
   return mHtml('Add Entry — '+esc(person.name),
     '<div class="fg"><label class="fl">Type</label>'+
     '<div style="display:flex;gap:0;border-radius:var(--r12);overflow:hidden;border:1.5px solid var(--bds)">'+
-    '<button class="nec-btn active-need" data-action="ledger-type-pick" data-ltype="lent" id="ltype-lent">↑ I Lent</button>'+
-    '<button class="nec-btn" data-action="ledger-type-pick" data-ltype="borrowed" id="ltype-borrowed">↓ I Borrowed</button>'+
-    '<button class="nec-btn" data-action="ledger-type-pick" data-ltype="partial" id="ltype-partial">↩ Repaid</button>'+
-    '</div><input type="hidden" id="m-ltype" value="lent"></div>'+
+    '<button class="nec-btn'+(preType==='lent'?' active-need':'')+'" data-action="ledger-type-pick" data-ltype="lent" id="ltype-lent">↑ I Lent</button>'+
+    '<button class="nec-btn'+(preType==='borrowed'?' active-avoid':'')+'" data-action="ledger-type-pick" data-ltype="borrowed" id="ltype-borrowed">↓ I Borrowed</button>'+
+    '<button class="nec-btn'+(preType==='partial'?' active-want':'')+'" data-action="ledger-type-pick" data-ltype="partial" id="ltype-partial">↩ Repaid</button>'+
+    '</div><input type="hidden" id="m-ltype" value="'+(preType||'lent')+'"></div>'+
     '<div class="frow"><div class="fg"><label class="fl">Amount</label><input id="m-lamount" type="number" placeholder="0"></div>'+
     '<div class="fg"><label class="fl">Currency</label>'+curSelect('m-lcurrency',cur)+'</div></div>'+
     '<div class="fg"><label class="fl">Date</label><input id="m-ldate" type="date" value="'+today+'"></div>'+
@@ -1656,7 +1722,7 @@ function render(){
   var peEl=viewEl.querySelector('.pe');
   if(peEl&&app._animating){peEl.classList.add('animate');app._animating=false;}
   document.getElementById('bottom-nav').innerHTML=renderBottomNav();
-  var pb=document.querySelector('.page-body');if(pb)pb.scrollTop=0;
+  if(app._navRender){var pb=document.querySelector('.page-body');if(pb)pb.scrollTop=0;app._navRender=false;}
   var fd=document.getElementById('forecast-date');
   if(fd&&!fd._wlr){fd._wlr=1;fd.addEventListener('change',function(){app.forecastDate=this.value;render();});}
   var sc=document.getElementById('sidebar-cur');
@@ -1683,7 +1749,7 @@ document.addEventListener('click',function(e){
   switch(action){
     case 'nav':
       closeModal();closeBsheet();
-      app._animating=true;
+      app._animating=true;app._navRender=true;
       app.view=el.dataset.view;
       render();
       break;
@@ -1693,7 +1759,7 @@ document.addEventListener('click',function(e){
       closeBsheet();break;
     case 'nav-sheet':
       closeBsheet();
-      app._animating=true;
+      app._animating=true;app._navRender=true;
       app.view=el.dataset.view;
       render();
       break;
@@ -1701,25 +1767,36 @@ document.addEventListener('click',function(e){
       app.theme=app.theme==='dark'?'light':'dark';render();break;
     case 'open-modal':
       var mt=el.dataset.modal;
-      if(mt==='account')openModal(renderAccountModal());
-      else if(mt==='card')openModal(renderCardModal());
+      if(mt==='account')openModal(renderAccountModal(null));
+      else if(mt==='card')openModal(renderCardModal(null));
       else if(mt==='expense'){
-        app._expNec='need';
-        openModal(renderExpenseModal());
+        openModal(renderExpenseModal(null));
         var tp=document.getElementById('m-type');
         if(tp)tp.addEventListener('change',function(){
-          document.getElementById('date-wrap').style.display=this.value==='once'?'block':'none';
+          var dw=document.getElementById('date-wrap');
+          var dl=document.getElementById('m-date-lbl');
+          if(dw){dw.style.display=(this.value==='once'||this.value==='daily')?'block':'none';}
+          if(dl){dl.textContent=this.value==='daily'?'Entry Date':'Date';}
         });
       }
-      else if(mt==='income')openModal(renderIncomeModal());
-      else if(mt==='investment')openModal(renderInvestmentModal());
-      else if(mt==='task')openModal(renderTaskModal());
+      else if(mt==='income')openModal(renderIncomeModal(null));
+      else if(mt==='investment')openModal(renderInvestmentModal(null));
+      else if(mt==='task')openModal(renderTaskModal(null));
       else if(mt==='category'){app._catPickedColor=CAT_PALETTE[0];openModal(renderCategoryModal());}
       else if(mt==='ledger-person')openModal(renderLedgerPersonModal());
+      else if(mt==='expense-today'){
+        var todayPre=new Date().toISOString().split('T')[0];
+        var prefilledExp={type:'daily',date:todayPre,necessity:'need',name:'',amount:'',cat:'Other',currency:app.data.settings.currency||'AED',accountId:''};
+        openModal(renderExpenseModal(prefilledExp));
+        var tp=document.getElementById('m-type');
+        if(tp)tp.addEventListener('change',function(){
+          var dw=document.getElementById('date-wrap');
+          if(dw)dw.style.display=(this.value==='once'||this.value==='daily')?'block':'none';
+        });
+      }
       break;
     case 'nec-pick':
-      app._expNec=el.dataset.nec;
-      // Update button styles
+      // Update button styles and hidden input
       document.querySelectorAll('.nec-btn').forEach(function(b){b.className='nec-btn';});
       el.className='nec-btn active-'+el.dataset.nec;
       document.getElementById('m-nec').value=el.dataset.nec;
@@ -1730,7 +1807,39 @@ document.addEventListener('click',function(e){
       el.classList.add('sel');
       document.getElementById('m-cat-color').value=el.dataset.color;
       break;
-    case 'close-modal':closeModal();break;
+    case 'close-modal':closeModal();app._editId=null;app._editKey=null;break;
+    case 'edit-item':{
+      var ekey=el.dataset.key,eid=el.dataset.id;
+      var eitem=app.data[ekey]&&app.data[ekey].find(function(x){return x.id===eid;});
+      if(!eitem){toast('Item not found','error');return;}
+      app._editId=eid;app._editKey=ekey;
+      if(ekey==='accounts'){
+        openModal(renderAccountModal(eitem));
+        // pre-select color
+        setTimeout(function(){
+          var mb=document.querySelector('.modal-box');
+          if(mb)mb._pickedColor=eitem.color;
+          document.querySelectorAll('#acc-colors div').forEach(function(d){
+            d.style.border=d.dataset.color===eitem.color?'3px solid var(--tx)':'2px solid transparent';
+          });
+        },0);
+      }
+      else if(ekey==='cards')openModal(renderCardModal(eitem));
+      else if(ekey==='expenses'){
+        openModal(renderExpenseModal(eitem));
+        var tp2=document.getElementById('m-type');
+        if(tp2)tp2.addEventListener('change',function(){
+          var dw=document.getElementById('date-wrap');
+          if(dw)dw.style.display=(this.value==='once'||this.value==='daily')?'block':'none';
+        });
+      }
+      else if(ekey==='income')openModal(renderIncomeModal(eitem));
+      else if(ekey==='investments'){
+        openModal(renderInvestmentModal(eitem));
+        setTimeout(function(){invTypeChange();},0);
+      }
+      else if(ekey==='tasks')openModal(renderTaskModal(eitem));
+      break;}
     case 'rem-item':
       if(confirm('Remove this item?')){remItem(key,id);toast('Removed ✓');}break;
     case 'pick-color':
@@ -1745,28 +1854,63 @@ document.addEventListener('click',function(e){
       var pc=mb&&mb._pickedColor?mb._pickedColor:ACC_CLRS[0];
       if(!n||!n.value.trim()){toast('Enter a name','error');return;}
       if(!b||!b.value){toast('Enter a balance','error');return;}
-      closeModal();addItem('accounts',{name:n.value.trim(),type:mtp?mtp.value:'Savings',balance:b.value,color:pc,currency:mc?mc.value:(app.data.settings.currency||'AED')});toast('Account added ✓');break;}
+      var accData={name:n.value.trim(),type:mtp?mtp.value:'Savings',balance:b.value,color:pc,currency:mc?mc.value:(app.data.settings.currency||'AED')};
+      closeModal();
+      if(app._editId&&app._editKey==='accounts'){updItem('accounts',app._editId,accData);app._editId=null;app._editKey=null;toast('Account updated ✓');}else{addItem('accounts',accData);toast('Account added ✓');}
+      break;}
     case 'save-card':{
       var bn=document.getElementById('m-bank'),nk=document.getElementById('m-nick');
       var lm=document.getElementById('m-limit'),ot=document.getElementById('m-out');
       var du=document.getElementById('m-due'),mn=document.getElementById('m-min');
       var mc2=document.getElementById('m-currency');
       if(!bn||!bn.value.trim()||!lm||!lm.value){toast('Fill required fields','error');return;}
-      closeModal();addItem('cards',{bank:bn.value.trim(),nickname:nk&&nk.value.trim()?nk.value.trim():bn.value.trim(),limit:lm.value,outstanding:ot?ot.value:'0',due:du?du.value:'15',minDue:mn?mn.value:'0',currency:mc2?mc2.value:(app.data.settings.currency||'AED')});toast('Card added ✓');break;}
+      var cardData={bank:bn.value.trim(),nickname:nk&&nk.value.trim()?nk.value.trim():bn.value.trim(),limit:lm.value,outstanding:ot?ot.value:'0',due:du?du.value:'15',minDue:mn?mn.value:'0',currency:mc2?mc2.value:(app.data.settings.currency||'AED')};
+      closeModal();
+      if(app._editId&&app._editKey==='cards'){updItem('cards',app._editId,cardData);app._editId=null;app._editKey=null;toast('Card updated ✓');}else{addItem('cards',cardData);toast('Card added ✓');}
+      break;}
     case 'save-expense':{
       var nm=document.getElementById('m-name'),am=document.getElementById('m-amount');
       var ct=document.getElementById('m-cat'),tp3=document.getElementById('m-type');
       var dt=document.getElementById('m-date'),mc3=document.getElementById('m-currency');
+      var macc3=document.getElementById('m-account');
       if(!nm||!nm.value.trim()||!am||!am.value){toast('Fill required fields','error');return;}
       var mn3=document.getElementById('m-nec');
-      var necVal=mn3?mn3.value:(app._expNec||'need');
-      closeModal();addItem('expenses',{name:nm.value.trim(),amount:am.value,cat:ct?ct.value:'Other',type:tp3?tp3.value:'monthly',date:dt?dt.value:'',currency:mc3?mc3.value:(app.data.settings.currency||'AED'),necessity:necVal});toast('Expense added ✓');break;}
+      var necVal=mn3?mn3.value:'need';
+      var expType=tp3?tp3.value:'monthly';
+      // Only keep date for types that use it; clear for monthly/weekly
+      var expDate=(expType==='once'||expType==='daily')?(dt?dt.value:''):'';
+      var accId3=macc3&&macc3.value?macc3.value:'';
+      var expData={name:nm.value.trim(),amount:am.value,cat:ct?ct.value:'Other',type:expType,date:expDate,currency:mc3?mc3.value:(app.data.settings.currency||'AED'),necessity:necVal,accountId:accId3};
+      // If expense has account + today's date: deduct from account balance
+      var today3=new Date().toISOString().split('T')[0];
+      if((expType==='daily'||expType==='once')&&expDate===today3&&accId3&&!app._editId){
+        var tgtAcc3=app.data.accounts.find(function(a){return a.id===accId3;});
+        if(tgtAcc3){
+          var expAmtNum=+am.value||0;
+          var expCurr=mc3?mc3.value:(app.data.settings.currency||'AED');
+          var accCurr3=tgtAcc3.currency||(app.data.settings.currency||'AED');
+          // Convert expense amount to account currency
+          var deductAmt=expCurr===accCurr3?expAmtNum:
+            toBase(expAmtNum,expCurr)/(app.data.settings.rates[accCurr3]||1);
+          var newBal3=Math.max(0,(+tgtAcc3.balance||0)-deductAmt);
+          // Direct mutation — avoid double save/render from updItem
+          app.data.accounts=app.data.accounts.map(function(a){
+            return a.id===accId3?Object.assign({},a,{balance:String(newBal3)}):a;
+          });
+        }
+      }
+      closeModal();
+      if(app._editId&&app._editKey==='expenses'){updItem('expenses',app._editId,expData);app._editId=null;app._editKey=null;toast('Expense updated ✓');}else{addItem('expenses',expData);toast('Expense added ✓');}
+      break;}
     case 'save-income':{
       var sr=document.getElementById('m-source'),am2=document.getElementById('m-amount');
       var fr=document.getElementById('m-freq'),rc=document.getElementById('m-rec');
       var mc4=document.getElementById('m-currency');
       if(!sr||!sr.value.trim()||!am2||!am2.value){toast('Fill required fields','error');return;}
-      closeModal();addItem('income',{source:sr.value.trim(),amount:am2.value,freq:fr?fr.value:'monthly',recurring:rc&&rc.checked?'1':'',currency:mc4?mc4.value:(app.data.settings.currency||'AED')});toast('Income added ✓');break;}
+      var incData={source:sr.value.trim(),amount:am2.value,freq:fr?fr.value:'monthly',recurring:rc&&rc.checked?'1':'',currency:mc4?mc4.value:(app.data.settings.currency||'AED')};
+      closeModal();
+      if(app._editId&&app._editKey==='income'){updItem('income',app._editId,incData);app._editId=null;app._editKey=null;toast('Income updated ✓');}else{addItem('income',incData);toast('Income added ✓');}
+      break;}
     case 'save-investment':{
       var nm2=document.getElementById('m-name'),tp4=document.getElementById('m-type');
       var mc5=document.getElementById('m-currency');
@@ -1809,31 +1953,36 @@ document.addEventListener('click',function(e){
         invData.current=stdCur?stdCur.value:stdInv.value;
         invData.sip=stdSip?stdSip.value:'0';
       }
-      closeModal();addItem('investments',invData);toast('Investment added ✓');break;}
+      closeModal();
+      if(app._editId&&app._editKey==='investments'){updItem('investments',app._editId,invData);app._editId=null;app._editKey=null;toast('Investment updated ✓');}else{addItem('investments',invData);toast('Investment added ✓');}
+      break;}
     case 'save-task':{
       var ttl=document.getElementById('m-title'),ct2=document.getElementById('m-cat');
       var pr=document.getElementById('m-pri'),du2=document.getElementById('m-due');
       if(!ttl||!ttl.value.trim()){toast('Enter a task title','error');return;}
-      closeModal();addItem('tasks',{title:ttl.value.trim(),cat:ct2?ct2.value:'Finance',pri:pr?pr.value:'medium',due:du2?du2.value:'',done:''});toast('Task added ✓');break;}
+      var taskData={title:ttl.value.trim(),cat:ct2?ct2.value:'Finance',pri:pr?pr.value:'medium',due:du2?du2.value:''};
+      closeModal();
+      if(app._editId&&app._editKey==='tasks'){updItem('tasks',app._editId,taskData);app._editId=null;app._editKey=null;toast('Task updated ✓');}else{addItem('tasks',Object.assign({done:''},taskData));toast('Task added ✓');}
+      break;}
     case 'toggle-task':
       var task=app.data.tasks.find(function(t){return t.id===id;});
       if(task)updItem('tasks',id,{done:task.done?'':'1'});break;
     case 'exp-filter':
-      app.expFil=el.dataset.filter;render();
+      app.expFil=el.dataset.filter;app._navRender=true;render();
       // Scroll active pill into view
       setTimeout(function(){var ap=document.querySelector('.pill-tab.active');if(ap)ap.scrollIntoView({block:'nearest',inline:'center',behavior:'smooth'});},30);
       break;
-    case 'task-filter':app.taskFil=el.dataset.filter;render();break;
+    case 'task-filter':app.taskFil=el.dataset.filter;app._navRender=true;render();break;
     case 'cal-prev':
       app.calMonth--;
       if(app.calMonth<0){app.calMonth=11;app.calYear--;}
-      app.calDay=null;render();break;
+      app.calDay=null;app._navRender=true;render();break;
     case 'cal-next':
       app.calMonth++;
       if(app.calMonth>11){app.calMonth=0;app.calYear++;}
-      app.calDay=null;render();break;
+      app.calDay=null;app._navRender=true;render();break;
     case 'cal-filter':
-      app.calFil=el.dataset.filter;app.calDay=null;render();break;
+      app.calFil=el.dataset.filter;app.calDay=null;app._navRender=true;render();break;
     case 'cal-day':
       var clickedDay=parseInt(el.dataset.day);
       app.calDay=(app.calDay===clickedDay)?null:clickedDay;
@@ -1874,7 +2023,7 @@ document.addEventListener('click',function(e){
           var ev3=buildCalendarEvents(app.calMonth,app.calYear);
           var mt2={income:0,expense:0,card:0};
           var days3=new Date(app.calYear,app.calMonth+1,0).getDate();
-          for(var dd3=1;dd3<=days3;dd3++){(ev3[dd3]||[]).forEach(function(e){if(e.type==='income')mt2.income+=e.amount;else if(e.type==='expense')mt2.expense+=e.amount;else if(e.type==='card')mt2.card+=e.amount;});}
+          for(var dd3=1;dd3<=days3;dd3++){(ev3[dd3]||[]).forEach(function(e){if(e.type==='income')mt2.income+=e.amount;else if(e.type==='expense'&&!e.estimate)mt2.expense+=e.amount;else if(e.type==='card')mt2.card+=e.amount;});}
           dh='<div style="font-size:13px;font-weight:700;margin-bottom:12px">'+MNFULL[app.calMonth]+' Summary</div>';
           dh+='<div class="cal-event-row"><div class="cal-ev-dot" style="background:var(--ac)"></div><div style="flex:1;font-size:12px;color:var(--t2)">Income</div><div class="mono" style="font-size:12px;font-weight:700;color:var(--ac)">'+fmt(mt2.income,cur2)+'</div></div>';
           dh+='<div class="cal-event-row"><div class="cal-ev-dot" style="background:var(--am)"></div><div style="flex:1;font-size:12px;color:var(--t2)">Expenses</div><div class="mono" style="font-size:12px;font-weight:700;color:var(--am)">'+fmt(mt2.expense,cur2)+'</div></div>';
@@ -1949,9 +2098,19 @@ document.addEventListener('click',function(e){
       a.click();
       setTimeout(function(){document.body.removeChild(a);URL.revokeObjectURL(url);},200);
       toast('Backup downloaded ✓');break;}
+    case 'ledger-toggle':{
+      var ltogPid=el.dataset.pid;
+      app.ledgerOpen[ltogPid]=!app.ledgerOpen[ltogPid];
+      // Fast toggle: flip chevron and show/hide body
+      var lbody=document.getElementById('lb-'+ltogPid);
+      var lchev=document.getElementById('lc-'+ltogPid);
+      if(lbody){lbody.style.display=app.ledgerOpen[ltogPid]?'block':'none';}
+      if(lchev){lchev.style.transform=app.ledgerOpen[ltogPid]?'rotate(180deg)':'rotate(0deg)';}
+      break;}
     case 'ledger-add-tx':{
       var ledpid=el.dataset.pid;
-      var ledHtml=renderLedgerTxModal(ledpid);
+      var ledPreType=el.dataset.ltype||'lent';
+      var ledHtml=renderLedgerTxModal(ledpid,ledPreType);
       if(ledHtml)openModal(ledHtml);
       else{toast('Person not found','error');render();}
       break;}
@@ -2001,15 +2160,37 @@ document.addEventListener('click',function(e){
       var p4=(app.data.ledger||[]).find(function(p){return p.id===ltpid;});
       if(p4){
         if(!p4.transactions)p4.transactions=[];
+        var ltxType=ltypeEl?ltypeEl.value:'lent';
+        var ltxDate=ldate?ldate.value:new Date().toISOString().split('T')[0];
+        var ltxAccId=lacc&&lacc.value?lacc.value:'';
+        var ltxAmt=+lamt.value||0;
+        var ltxCur=lcur?lcur.value:(app.data.settings.currency||'AED');
         p4.transactions.push({
-          id:uid(),
-          type:ltypeEl?ltypeEl.value:'lent',
-          amount:lamt.value,
-          currency:lcur?lcur.value:(app.data.settings.currency||'AED'),
-          date:ldate?ldate.value:new Date().toISOString().split('T')[0],
-          accountId:lacc&&lacc.value?lacc.value:'',
-          note:lnote?lnote.value.trim():''
+          id:uid(),type:ltxType,amount:lamt.value,
+          currency:ltxCur,date:ltxDate,
+          accountId:ltxAccId,note:lnote?lnote.value.trim():''
         });
+        // If today: reflect in linked account (direct mutation, no extra render)
+        var todayTx=new Date().toISOString().split('T')[0];
+        if(ltxDate===todayTx&&ltxAccId){
+          var ltxAcc=app.data.accounts.find(function(a){return a.id===ltxAccId;});
+          if(ltxAcc){
+            var ltxBase=app.data.settings.currency||'AED';
+            var ltxAccCur=ltxAcc.currency||ltxBase;
+            var ltxAmtInAccCur=ltxAccCur===ltxCur?ltxAmt:
+              (ltxAccCur===ltxBase?toBase(ltxAmt,ltxCur):(ltxAmt*(app.data.settings.rates[ltxCur]||1)/(app.data.settings.rates[ltxAccCur]||1)));
+            var curAccBal=+ltxAcc.balance||0;
+            var newAccBal;
+            if(ltxType==='lent')newAccBal=curAccBal-ltxAmtInAccCur;
+            else if(ltxType==='borrowed')newAccBal=curAccBal+ltxAmtInAccCur;
+            else if(ltxType==='partial')newAccBal=curAccBal+ltxAmtInAccCur;
+            else newAccBal=curAccBal;
+            // Direct mutation — avoid double save/render from updItem
+            app.data.accounts=app.data.accounts.map(function(a){
+              return a.id===ltxAccId?Object.assign({},a,{balance:String(Math.max(0,newAccBal))}):a;
+            });
+          }
+        }
         closeModal();saveData();render();toast('Entry saved ✓');
       }else{closeModal();toast('Person not found','error');render();}break;}
 
@@ -2108,8 +2289,26 @@ function signInWithGoogle(){
 
 function signOut(){
   firebase.auth().signOut().then(function(){
+    // Reset auth mode to sign-in so welcome screen shows correctly
+    _authMode='signin';
+    var h=document.getElementById('auth-heading');
+    var st=document.getElementById('auth-switch-text');
+    var sb=document.getElementById('auth-switch-btn');
+    var btn=document.getElementById('auth-submit-btn');
+    var fn=document.getElementById('field-name');
+    if(h)h.textContent='Welcome back';
+    if(st)st.textContent="Don't have an account?";
+    if(sb)sb.textContent='Sign Up';
+    if(btn){btn.textContent='Sign In';btn.disabled=false;}
+    if(fn)fn.style.display='none';
+    var ae=document.getElementById('auth-error');
+    if(ae)ae.style.display='none';
+    var em=document.getElementById('auth-email');
+    var pw=document.getElementById('auth-password');
+    if(em)em.value='';if(pw)pw.value='';
     document.getElementById('app-root').style.display='none';
-    document.getElementById('auth-screen').style.display='flex';document.body.classList.add('auth-open');document.documentElement.classList.add('auth-open');
+    document.getElementById('auth-screen').style.display='flex';
+    document.body.classList.add('auth-open');document.documentElement.classList.add('auth-open');
   });
 }
 
