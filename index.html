@@ -1495,13 +1495,17 @@ function renderLedger(){
   ledger.forEach(function(person){
     var net=0;
     var txsSorted=(person.transactions||[]).slice().sort(function(a,b){return (a.date||'').localeCompare(b.date||'');});
-    var lastSettled=-1;
-    txsSorted.forEach(function(tx,i){if(tx.type==='settled')lastSettled=i;});
-    txsSorted.slice(lastSettled+1).forEach(function(tx){
+    txsSorted.forEach(function(tx){
       var a=toBase(+tx.amount||0,tx.currency||cur);
       if(tx.type==='lent')net+=a;
       else if(tx.type==='borrowed')net-=a;
       else if(tx.type==='partial')net-=a;
+      else if(tx.type==='settled'){
+        // settled reduces debt proportionally: positive net → subtract settled; negative net → add settled
+        if(net>0)net=Math.max(0,net-a);
+        else if(net<0)net=Math.min(0,net+a);
+        else net=0;
+      }
     });
     if(net>0)totalLent+=net; else totalOwed+=Math.abs(net);
   });
@@ -1520,13 +1524,16 @@ function renderLedger(){
     var txs=person.transactions||[];
     var net=0;
     var sorted1=txs.slice().sort(function(a,b){return (a.date||'').localeCompare(b.date||'');});
-    var lastSettled1=-1;
-    sorted1.forEach(function(tx,i){if(tx.type==='settled')lastSettled1=i;});
-    sorted1.slice(lastSettled1+1).forEach(function(tx){
+    sorted1.forEach(function(tx){
       var a=toBase(+tx.amount||0,tx.currency||cur);
       if(tx.type==='lent')net+=a;
       else if(tx.type==='borrowed')net-=a;
       else if(tx.type==='partial')net-=a;
+      else if(tx.type==='settled'){
+        if(net>0)net=Math.max(0,net-a);
+        else if(net<0)net=Math.min(0,net+a);
+        else net=0;
+      }
     });
     var netClr=net>0?'var(--ac)':net<0?'var(--rd)':'var(--t2)';
     var netLabel=net>0?'Owes you '+fmt(net,cur):net<0?'You owe '+fmt(Math.abs(net),cur):'All settled ✓';
@@ -1549,8 +1556,7 @@ function renderLedger(){
     h+='<div style="display:flex;gap:8px;padding:12px 16px;border-bottom:1px solid var(--bds);flex-wrap:wrap">';
     h+='<button class="btn btn-primary btn-sm" data-action="ledger-add-tx" data-pid="'+person.id+'" data-ltype="lent">↑ I Lent</button>';
     h+='<button class="btn btn-sm" style="background:var(--rdd);color:var(--rd);border-color:transparent" data-action="ledger-add-tx" data-pid="'+person.id+'" data-ltype="borrowed">↓ I Borrowed</button>';
-    h+='<button class="btn btn-sm" style="background:var(--amd);color:var(--am);border-color:transparent" data-action="ledger-add-tx" data-pid="'+person.id+'" data-ltype="partial">↩ Repaid</button>';
-    if(!isSettled)h+='<button class="btn btn-ghost btn-sm" data-action="ledger-settle" data-pid="'+person.id+'">✓ Settle All</button>';
+    if(!isSettled)h+='<button class="btn btn-ghost btn-sm" data-action="ledger-settle" data-pid="'+person.id+'" data-net="'+net+'">✓ Settle</button>';
     h+='<button class="btn btn-danger btn-icon btn-sm" style="margin-left:auto" data-action="rem-item" data-key="ledger" data-id="'+person.id+'" aria-label="Remove">'+ico('trash',11)+'</button>';
     h+='</div>';
 
@@ -1574,7 +1580,7 @@ function renderLedger(){
         h+='</div>';
         h+='<div style="font-size:10px;color:var(--t3);margin-top:1px">'+txDate+(linkedAcc?' · 🏦 '+esc(linkedAcc.name):'')+'</div>';
         h+='</div>';
-        if(tx.type!=='settled')h+='<div class="mono" style="font-size:12px;font-weight:700;color:'+txClr+'">'+fmtf(txAmt,txCur)+'</div>';
+        if(txAmt>0)h+='<div class="mono" style="font-size:12px;font-weight:700;color:'+txClr+'">'+fmtf(txAmt,txCur)+'</div>';
         h+='<button class="btn btn-danger btn-icon btn-sm" data-action="ledger-rem-tx" data-pid="'+person.id+'" data-tid="'+tx.id+'" aria-label="Remove" style="width:28px;height:28px;min-width:28px">'+ico('trash',10)+'</button>';
         h+='</div>';
       });
@@ -1607,7 +1613,6 @@ function renderLedgerTxModal(personId,preType){
     '<div style="display:flex;gap:0;border-radius:var(--r12);overflow:hidden;border:1.5px solid var(--bds)">'+
     '<button class="nec-btn'+(preType==='lent'?' active-need':'')+'" data-action="ledger-type-pick" data-ltype="lent" id="ltype-lent">↑ I Lent</button>'+
     '<button class="nec-btn'+(preType==='borrowed'?' active-avoid':'')+'" data-action="ledger-type-pick" data-ltype="borrowed" id="ltype-borrowed">↓ I Borrowed</button>'+
-    '<button class="nec-btn'+(preType==='partial'?' active-want':'')+'" data-action="ledger-type-pick" data-ltype="partial" id="ltype-partial">↩ Repaid</button>'+
     '</div><input type="hidden" id="m-ltype" value="'+(preType||'lent')+'"></div>'+
     '<div class="frow"><div class="fg"><label class="fl">Amount</label><input id="m-lamount" type="number" placeholder="0"></div>'+
     '<div class="fg"><label class="fl">Currency</label>'+curSelect('m-lcurrency',cur)+'</div></div>'+
@@ -1617,6 +1622,33 @@ function renderLedgerTxModal(personId,preType){
     '<div class="mf"><button class="btn btn-ghost" data-action="close-modal">Cancel</button><button class="btn btn-primary" data-action="save-ledger-tx" data-pid="'+personId+'">Save</button></div>'
   );
 }
+
+function renderLedgerSettleModal(personId, netAmt){
+  var d=app.data,cur=d.settings.currency||'AED';
+  var person=(d.ledger||[]).find(function(p){return p.id===personId;});
+  if(!person)return'';
+  var absNet=Math.abs(netAmt);
+  var isOwedToMe=netAmt>0; // net>0 means they owe me
+  var accOpts='<option value="">None (Cash)</option>'+d.accounts.map(function(a){return '<option value="'+a.id+'">'+esc(a.name)+'</option>';}).join('');
+  var today=new Date().toISOString().split('T')[0];
+  var settleLabel=isOwedToMe?'💚 Received from '+esc(person.name):'🔴 Paid to '+esc(person.name);
+  return mHtml('Settle — '+esc(person.name),
+    '<div style="background:var(--el);border-radius:var(--r12);padding:11px 13px;margin-bottom:14px;font-size:12px;color:var(--t2)">'+
+    'Outstanding: <strong style="color:var(--tx)">'+fmt(absNet,cur)+'</strong> · '+
+    (isOwedToMe?'They owe you':'You owe them')+'</div>'+
+    '<div class="fg"><label class="fl">Settlement Amount</label>'+
+    '<input id="m-settle-amt" type="number" placeholder="0" value="'+Math.round(absNet)+'"></div>'+
+    '<div class="frow"><div class="fg"><label class="fl">Currency</label>'+curSelect('m-settle-cur',cur)+'</div>'+
+    '<div class="fg"><label class="fl">Date</label><input id="m-settle-date" type="date" value="'+today+'"></div></div>'+
+    '<div class="fg"><label class="fl">'+settleLabel+'</label>'+
+    '<select id="m-settle-account">'+accOpts+'</select></div>'+
+    '<div class="fg"><label class="fl">Note (optional)</label>'+
+    '<input id="m-settle-note" placeholder="e.g. Bank transfer, cash..."></div>'+
+    '<div class="mf"><button class="btn btn-ghost" data-action="close-modal">Cancel</button>'+
+    '<button class="btn btn-primary" data-action="save-ledger-settle" data-pid="'+personId+'" data-net="'+netAmt+'">Mark Settled</button></div>'
+  );
+}
+
 
 // ── SIDEBAR & BOTTOMNAV ────────────────────────────────────────
 function renderSidebar(){
@@ -2117,21 +2149,95 @@ document.addEventListener('click',function(e){
 
     case 'ledger-settle':{
       var lpid2=el.dataset.pid;
-      if(!confirm('Mark everything settled with this person?'))return;
-      var p2=(app.data.ledger||[]).find(function(p){return p.id===lpid2;});
-      if(p2){
-        if(!p2.transactions)p2.transactions=[];
-        p2.transactions.push({id:uid(),type:'settled',amount:0,date:new Date().toISOString().split('T')[0],note:'Settled',accountId:'',currency:app.data.settings.currency||'AED'});
-        saveData();render();toast('Marked as settled ✓');
-      }break;}
+      var settleNet=parseFloat(el.dataset.net)||0;
+      var settleHtml=renderLedgerSettleModal(lpid2,settleNet);
+      if(settleHtml)openModal(settleHtml);
+      else toast('Person not found','error');
+      break;}
+
+    case 'save-ledger-settle':{
+      var slPid=el.dataset.pid;
+      var slNet=parseFloat(el.dataset.net)||0;
+      var slAmt=document.getElementById('m-settle-amt');
+      var slCur=document.getElementById('m-settle-cur');
+      var slDate=document.getElementById('m-settle-date');
+      var slAcc=document.getElementById('m-settle-account');
+      var slNote=document.getElementById('m-settle-note');
+      if(!slAmt||!slAmt.value){toast('Enter settlement amount','error');return;}
+      var slAmtNum=+slAmt.value||0;
+      var slCurVal=slCur?slCur.value:(app.data.settings.currency||'AED');
+      var slDateVal=slDate?slDate.value:new Date().toISOString().split('T')[0];
+      var slAccId=slAcc&&slAcc.value?slAcc.value:'';
+      var slNoteVal=slNote?slNote.value.trim():'';
+      var slPerson=(app.data.ledger||[]).find(function(p){return p.id===slPid;});
+      if(!slPerson){closeModal();toast('Person not found','error');return;}
+      if(!slPerson.transactions)slPerson.transactions=[];
+      // Push a settle transaction with amount (not just a marker)
+      slPerson.transactions.push({
+        id:uid(),type:'settled',amount:String(slAmtNum),
+        currency:slCurVal,date:slDateVal,
+        accountId:slAccId,note:slNoteVal||'Settlement'
+      });
+      // Adjust account balance for today's settlements
+      var todaySettle=new Date().toISOString().split('T')[0];
+      if(slDateVal===todaySettle&&slAccId&&slAmtNum>0){
+        var slAccObj=app.data.accounts.find(function(a){return a.id===slAccId;});
+        if(slAccObj){
+          var slBase=app.data.settings.currency||'AED';
+          var slAccCur=slAccObj.currency||slBase;
+          var slAmtInAccCur=slAccCur===slCurVal?slAmtNum:
+            (slAccCur===slBase?toBase(slAmtNum,slCurVal):(slAmtNum*(app.data.settings.rates[slCurVal]||1)/(app.data.settings.rates[slAccCur]||1)));
+          var slCurBal=+slAccObj.balance||0;
+          var slNewBal;
+          // net>0 = they owe me = settlement means I receive money → balance increases
+          // net<0 = I owe them = settlement means I pay money → balance decreases
+          if(slNet>0)slNewBal=slCurBal+slAmtInAccCur;
+          else slNewBal=slCurBal-slAmtInAccCur;
+          app.data.accounts=app.data.accounts.map(function(a){
+            return a.id===slAccId?Object.assign({},a,{balance:String(Math.max(0,slNewBal))}):a;
+          });
+        }
+      }
+      closeModal();saveData();render();toast('Settlement recorded ✓');
+      break;}
 
     case 'ledger-rem-tx':{
       var lpid3=el.dataset.pid,ltid=el.dataset.tid;
       var p3=(app.data.ledger||[]).find(function(p){return p.id===lpid3;});
-      if(p3&&confirm('Remove this entry?')){
-        p3.transactions=(p3.transactions||[]).filter(function(tx){return tx.id!==ltid;});
-        saveData();render();toast('Entry removed ✓');
-      }break;}
+      if(!p3)break;
+      var txToRemove=p3.transactions&&p3.transactions.find(function(tx){return tx.id===ltid;});
+      if(!txToRemove)break;
+      // Build confirm message
+      var remMsg='Remove this entry?';
+      var todayRem=new Date().toISOString().split('T')[0];
+      var willReverse=txToRemove.accountId&&txToRemove.date===todayRem&&txToRemove.type!=='settled';
+      if(willReverse)remMsg='Remove this entry and reverse the account balance change?';
+      if(!confirm(remMsg))break;
+      // Reverse account balance if applicable
+      if(willReverse){
+        var remAcc=app.data.accounts.find(function(a){return a.id===txToRemove.accountId;});
+        if(remAcc){
+          var remBase=app.data.settings.currency||'AED';
+          var remAccCur=remAcc.currency||remBase;
+          var remTxCur=txToRemove.currency||(app.data.settings.currency||'AED');
+          var remAmt=+txToRemove.amount||0;
+          var remAmtInAccCur=remAccCur===remTxCur?remAmt:
+            (remAccCur===remBase?toBase(remAmt,remTxCur):(remAmt*(app.data.settings.rates[remTxCur]||1)/(app.data.settings.rates[remAccCur]||1)));
+          var curBal=+remAcc.balance||0;
+          var newBal;
+          // Reverse: lent had subtracted → add back; borrowed/partial had added → subtract back
+          if(txToRemove.type==='lent')newBal=curBal+remAmtInAccCur;
+          else if(txToRemove.type==='borrowed'||txToRemove.type==='partial')newBal=curBal-remAmtInAccCur;
+          else newBal=curBal;
+          app.data.accounts=app.data.accounts.map(function(a){
+            return a.id===txToRemove.accountId?Object.assign({},a,{balance:String(Math.max(0,newBal))}):a;
+          });
+        }
+      }
+      p3.transactions=(p3.transactions||[]).filter(function(tx){return tx.id!==ltid;});
+      saveData();render();
+      toast(willReverse?'Entry removed & balance reversed ✓':'Entry removed ✓');
+      break;}
 
     case 'ledger-type-pick':{
       var lt=el.dataset.ltype;
