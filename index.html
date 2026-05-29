@@ -1381,12 +1381,21 @@ function renderExpenseModal(item){
     '<div class="frow"><div class="fg"><label class="fl">Category</label><select id="m-cat">'+cats+'</select></div>'+
     '<div class="fg"><label class="fl">Type</label><select id="m-type"><option value="monthly"'+(expType==='monthly'?' selected':'')+'>Monthly</option><option value="daily"'+(expType==='daily'?' selected':'')+'>Daily</option><option value="weekly"'+(expType==='weekly'?' selected':'')+'>Weekly</option><option value="once"'+(expType==='once'?' selected':'')+'>One-time</option></select></div></div>'+
     '<div class="fg" id="date-wrap" style="display:block">'+
-    '<label class="fl" id="m-date-lbl">'+(expType==='monthly'?'Due Day of Month':expType==='weekly'?'Due Day of Week':expType==='daily'?'Entry Date':'Date')+'</label>'+
+    '<label class="fl" id="m-date-lbl">'+(expType==='monthly'?'Due Day of Month':expType==='weekly'?'Due Day of Week':expType==='daily'?'Daily Mode':'Date')+'</label>'+
     (expType==='monthly'?
       ('<select id="m-date">'+(function(){var o='';for(var d=1;d<=31;d++){o+='<option value="'+d+'"'+(item&&item.date&&+item.date===d?' selected':((!item||!item.date)&&d===1?' selected':''))+ '>Day '+d+'</option>';}return o;})()+'</select>')
     :expType==='weekly'?
       ('<select id="m-date">'+ ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map(function(d,i){return '<option value="'+i+'"'+(item&&item.date!==''&&item.date!==undefined&&+item.date===i?' selected':((!item||item.date===undefined||item.date==='')&&i===1?' selected':''))+'>'+d+'</option>';}).join('')+'</select>')
-    :'<input id="m-date" type="date" value="'+esc(item&&item.date?item.date:(expType==='once'||expType==='daily'?today:''))+'">')+
+    :expType==='daily'?
+      ('<div style="display:flex;gap:0;border-radius:var(--r12);overflow:hidden;border:1.5px solid var(--bds);margin-bottom:8px" id="daily-mode-toggle">'+
+      '<button type="button" class="nec-btn'+(item&&item.date?'':' active-need')+'" id="daily-recurring" onclick="setDailyMode(false)">📅 Every Day</button>'+
+      '<button type="button" class="nec-btn'+(item&&item.date?' active-need':'')+'" id="daily-oneoff" onclick="setDailyMode(true)">📌 Specific Date</button>'+
+      '</div>'+
+      '<div id="daily-date-wrap" style="display:'+(item&&item.date?'block':'none')+'">'+
+      '<input id="m-date" type="date" value="'+esc(item&&item.date?item.date:today)+'"></div>'+
+      '<input type="hidden" id="m-date-mode" value="'+(item&&item.date?'oneoff':'recurring')+'">')
+    :'<input id="m-date" type="date" value="'+esc(item&&item.date?item.date:(expType==='once'?today:''))+'">'+
+      '<input type="hidden" id="m-date-mode" value="">')+
     '</div>'+
     '<div class="fg"><label class="fl">Charged To</label><select id="m-account">'+payOpts+'</select></div>'+
     '<div class="fg"><label class="fl">Necessity</label>'+
@@ -1865,13 +1874,30 @@ function updateExpenseDateField(expType, currentVal){
     if(dc&&dc.tagName==='SELECT')dc.outerHTML='<input id="m-date" type="date" value="'+(currentVal||today)+'">';
     else if(dc&&!dc.value)dc.value=today;
   }else if(expType==='daily'){
-    if(dl)dl.textContent='Entry Date';
-    if(dc&&dc.tagName==='SELECT')dc.outerHTML='<input id="m-date" type="date" value="'+(currentVal||today)+'">';
-    else if(dc&&!dc.value)dc.value=today;
+    if(dl)dl.textContent='Daily';
+    // Replace date field with the recurring/oneoff toggle
+    if(dw)dw.innerHTML=
+      '<div style="display:flex;gap:0;border-radius:var(--r12);overflow:hidden;border:1.5px solid var(--bds);margin-bottom:8px" id="daily-mode-toggle">'+
+      '<button type="button" class="nec-btn active-need" id="daily-recurring" onclick="setDailyMode(false)">📅 Every Day</button>'+
+      '<button type="button" class="nec-btn" id="daily-oneoff" onclick="setDailyMode(true)">📌 Specific Date</button>'+
+      '</div>'+
+      '<div id="daily-date-wrap" style="display:none"><input id="m-date" type="date" value="'+(currentVal||today)+'"></div>'+
+      '<input type="hidden" id="m-date-mode" value="recurring">';
   }else{
     dw.style.display='none';
   }
 }
+
+window.setDailyMode=function(isOneOff){
+  var dw=document.getElementById('daily-date-wrap');
+  var dm=document.getElementById('m-date-mode');
+  var btn1=document.getElementById('daily-recurring');
+  var btn2=document.getElementById('daily-oneoff');
+  if(dw)dw.style.display=isOneOff?'block':'none';
+  if(dm)dm.value=isOneOff?'oneoff':'recurring';
+  if(btn1){btn1.className='nec-btn'+(isOneOff?'':' active-need');}
+  if(btn2){btn2.className='nec-btn'+(isOneOff?' active-need':'');}
+};
 
 window.updateIncomeDateField=function(freq,currentVal){
   var dw=document.getElementById('inc-date-wrap');
@@ -2077,7 +2103,13 @@ document.addEventListener('click',function(e){
       var necVal=mn3?mn3.value:'need';
       var expType=tp3?tp3.value:'monthly';
       // Keep date for all types (monthly=day number, weekly=weekday, once/daily=full date)
-      var expDate=dt?dt.value:'';
+      var dailyModeEl=document.getElementById('m-date-mode');
+      var expDate;
+      if(expType==='daily'&&dailyModeEl&&dailyModeEl.value==='recurring'){
+        expDate=''; // recurring daily — no date, shows every day on calendar
+      }else{
+        expDate=dt?dt.value:'';
+      }
       var payRaw=macc3&&macc3.value?macc3.value:'';
       var payType=payRaw.indexOf('card:')===0?'card':payRaw.indexOf('acc:')===0?'account':'';
       var payId=payRaw.indexOf(':')>=0?payRaw.split(':')[1]:payRaw;
