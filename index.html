@@ -966,9 +966,12 @@ function renderIncome(){
     h+='</div>';
     h+='<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">';
     var thisMonthInc=new Date().toISOString().slice(0,7);
-    var incPaidNow=i.lastIncPaid&&i.lastIncPaid===thisMonthInc;
+    var thisWeekInc=(function(){var d=new Date(),y=d.getFullYear(),jan1=new Date(y,0,1),wk=Math.ceil(((d-jan1)/86400000+jan1.getDay()+1)/7);return y+'-W'+(wk<10?'0':'')+wk;})();
+    var incPeriodKey=i.freq==='weekly'?thisWeekInc:thisMonthInc;
+    var incPaidNow=i.lastIncPaid&&i.lastIncPaid===incPeriodKey;
+    var incPaidLabel=i.freq==='weekly'?'✓ this week':'✓ '+thisMonthInc.slice(5);
     if(i.recurring&&i.accountId&&i.freq!=='once'){
-      if(incPaidNow){h+='<span class="badge badge-g" style="font-size:10px;padding:3px 7px">✓ '+thisMonthInc.slice(5)+'</span>';}
+      if(incPaidNow){h+='<span class="badge badge-g" style="font-size:10px;padding:3px 7px">'+incPaidLabel+'</span>';}
       else{h+='<button class="btn btn-sm" style="background:var(--acd);color:var(--ac);border-color:transparent;font-size:11px;white-space:nowrap" data-action="receive-income" data-id="'+i.id+'">+ Receive</button>';}
     }
     h+='<button class="btn btn-edit btn-icon btn-sm" data-action="edit-item" data-key="income" data-id="'+i.id+'" aria-label="Edit">'+ico('edit',11)+'</button>';
@@ -2193,7 +2196,9 @@ document.addEventListener('click',function(e){
       var recAcc=app.data.accounts.find(function(a){return a.id===recInc.accountId;});
       if(!recAcc){toast('Linked account not found','error');break;}
       var thisMonthRec=new Date().toISOString().slice(0,7);
-      if(recInc.lastIncPaid===thisMonthRec){toast('Already received this month','warn');break;}
+      var thisWeekRec=(function(){var d=new Date(),y=d.getFullYear(),jan1=new Date(y,0,1),wk=Math.ceil(((d-jan1)/86400000+jan1.getDay()+1)/7);return y+'-W'+(wk<10?'0':'')+wk;})();
+      var recPeriodKey=recInc.freq==='weekly'?thisWeekRec:thisMonthRec;
+      if(recInc.lastIncPaid===recPeriodKey){toast('Already received this '+(recInc.freq==='weekly'?'week':'month'),'warn');break;}
       var recAmt=+recInc.amount||0;
       var recCur=recInc.currency||(app.data.settings.currency||'AED');
       var recAccCur=recAcc.currency||(app.data.settings.currency||'AED');
@@ -2202,7 +2207,7 @@ document.addEventListener('click',function(e){
         return a.id===recInc.accountId?Object.assign({},a,{balance:String((+a.balance||0)+recCredit)}):a;
       });
       app.data.income=app.data.income.map(function(x){
-        return x.id===id?Object.assign({},x,{lastIncPaid:thisMonthRec}):x;
+        return x.id===id?Object.assign({},x,{lastIncPaid:recPeriodKey}):x;
       });
       saveData();render();
       toast(fmtf(recAmt,recCur)+' credited to '+esc(recAcc.name)+' ✓');
