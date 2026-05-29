@@ -430,8 +430,11 @@ function migrateData(d){
   d.expenses.forEach(function(e){
     if(!e.necessity)e.necessity='need';
     if(!e.accountId)e.accountId='';
-    // Clear stale dates from monthly/weekly expenses (date only meaningful for once/daily)
-    if((e.type==='monthly'||e.type==='weekly')&&e.date)e.date='';
+    // Legacy: if monthly/weekly has a full YYYY-MM-DD date, extract day number
+    if(e.type==='monthly'&&e.date&&e.date.length>2){
+      try{var _dp=e.date.split('-');e.date=String(parseInt(_dp[2]));}catch(_e){e.date='1';}
+    }
+    if(e.type==='weekly'&&e.date&&e.date.length>2){e.date='1';} // default Monday
   });
   return d;
 }
@@ -603,7 +606,19 @@ function buildCalendarEvents(mo,yr){
     var ecur=e.currency||cur;
     // If expense has a specific date in this month, show on that date
     var showDay=1;
-    if(e.date){try{var ep=e.date.split('-');var ey=parseInt(ep[0]),em=parseInt(ep[1])-1,ed=parseInt(ep[2]);if(em===mo&&ey===yr)showDay=ed;}catch(ex){}}
+    if(e.date){
+      try{
+        if(e.date.indexOf('-')>=0){
+          // Full date: show on that specific month/year
+          var ep=e.date.split('-');var ey2=parseInt(ep[0]),em2=parseInt(ep[1])-1,ed2=parseInt(ep[2]);
+          if(em2===mo&&ey2===yr)showDay=ed2;
+        }else{
+          // Simple day number: show every month on that day
+          var dayNum=parseInt(e.date)||1;
+          var daysInMo=new Date(yr,mo+1,0).getDate();
+          showDay=Math.min(dayNum,daysInMo);
+        }
+      }catch(ex){}}
     addEv(showDay,{type:'expense',label:esc(e.name),amount:toBase(+e.amount||0,ecur),currency:cur,color:'var(--am)'});
   });
 
@@ -631,8 +646,10 @@ function buildCalendarEvents(mo,yr){
   // Weekly expenses — shown on Monday
   d.expenses.filter(function(e){return e.type==='weekly';}).forEach(function(e){
     var ecur=e.currency||cur;
+    // Use stored weekday (0=Sun..6=Sat), default Monday(1) if not set
+    var targetDow=e.date!==undefined&&e.date!==''?+e.date:1;
     for(var dd=1;dd<=new Date(yr,mo+1,0).getDate();dd++){
-      if(new Date(yr,mo,dd).getDay()===1){
+      if(new Date(yr,mo,dd).getDay()===targetDow){
         addEv(dd,{type:'expense',label:esc(e.name)+' (weekly)',amount:toBase(+e.amount||0,ecur),currency:cur,color:'var(--am)'});
       }
     }
@@ -689,7 +706,9 @@ function renderDashboard(){
   var upcoming=[],nowDay=now.getDate(),dim=dpm(now);
   d.cards.forEach(function(c){upcoming.push({l:esc(c.nickname||c.bank),v:toBase(+c.minDue||0,c.currency),d:dueDays(c.due),tag:'Card Due'});});
   d.expenses.filter(function(e){return e.type==='monthly';}).slice(0,4).forEach(function(e){
-    upcoming.push({l:esc(e.name),v:toBase(+e.amount||0,e.currency),d:dim-nowDay+1,tag:'Monthly'});
+    var dueDay=e.date?parseInt(e.date)||1:1;
+    var daysUntil=dueDay>=nowDay?dueDay-nowDay:dim-nowDay+dueDay;
+    upcoming.push({l:esc(e.name),v:toBase(+e.amount||0,e.currency),d:daysUntil,tag:'Monthly'});
   });
   d.expenses.filter(function(e){return e.type==='once'&&e.date;}).forEach(function(e){
     try{var ed=new Date(e.date+'T12:00:00'),diff=Math.ceil((ed-now)/86400000);if(diff>=0&&diff<=60)upcoming.push({l:esc(e.name),v:toBase(+e.amount||0,e.currency),d:diff,tag:'One-time'});}catch(x){}
@@ -877,7 +896,13 @@ function renderExpenses(){
     var isTracked=e.type==='daily'&&e.date;
     if(!isTracked&&e.type!=='monthly'&&e.type!=='once')h+='<div style="font-size:10px;color:var(--t2)">'+fmtf(mBase,cur)+'/mo</div>';
     if(isTracked)h+='<div style="font-size:10px;color:var(--ac)">✓ Tracked</div>';
-    if(e.date)h+='<div style="font-size:10px;color:var(--t3)">'+esc(e.date)+'</div>';
+    if(e.date){
+      var dateLbl='';
+      if(e.type==='monthly')dateLbl='Due day '+e.date;
+      else if(e.type==='weekly')dateLbl='Every '+['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][+e.date]||'';
+      else dateLbl=esc(e.date);
+      if(dateLbl)h+='<div style="font-size:10px;color:var(--t3)">'+dateLbl+'</div>';
+    }
     h+='</div>';
     h+='<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">';
     h+='<button class="btn btn-edit btn-icon btn-sm" data-action="edit-item" data-key="expenses" data-id="'+e.id+'" aria-label="Edit">'+ico('edit',11)+'</button>';
@@ -1303,7 +1328,14 @@ function renderExpenseModal(item){
     '<div class="fg"><label class="fl">Currency</label>'+curSelect('m-currency',base)+'</div></div>'+
     '<div class="frow"><div class="fg"><label class="fl">Category</label><select id="m-cat">'+cats+'</select></div>'+
     '<div class="fg"><label class="fl">Type</label><select id="m-type"><option value="monthly"'+(expType==='monthly'?' selected':'')+'>Monthly</option><option value="daily"'+(expType==='daily'?' selected':'')+'>Daily</option><option value="weekly"'+(expType==='weekly'?' selected':'')+'>Weekly</option><option value="once"'+(expType==='once'?' selected':'')+'>One-time</option></select></div></div>'+
-    '<div class="fg" id="date-wrap" style="display:'+(expType==='once'||expType==='daily'?'block':'none')+'"><label class="fl" id="m-date-lbl">'+(expType==='daily'?'Entry Date':'Date')+'</label><input id="m-date" type="date" value="'+esc(item&&item.date?item.date:(expType==='once'||expType==='daily'?today:''))+'"></div>'+
+    '<div class="fg" id="date-wrap" style="display:block">'+
+    '<label class="fl" id="m-date-lbl">'+(expType==='monthly'?'Due Day of Month':expType==='weekly'?'Due Day of Week':expType==='daily'?'Entry Date':'Date')+'</label>'+
+    (expType==='monthly'?
+      ('<select id="m-date">'+(function(){var o='';for(var d=1;d<=31;d++){o+='<option value="'+d+'"'+(item&&item.date&&+item.date===d?' selected':((!item||!item.date)&&d===1?' selected':''))+ '>Day '+d+'</option>';}return o;})()+'</select>')
+    :expType==='weekly'?
+      ('<select id="m-date">'+ ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map(function(d,i){return '<option value="'+i+'"'+(item&&item.date!==''&&item.date!==undefined&&+item.date===i?' selected':((!item||item.date===undefined||item.date==='')&&i===1?' selected':''))+'>'+d+'</option>';}).join('')+'</select>')
+    :'<input id="m-date" type="date" value="'+esc(item&&item.date?item.date:(expType==='once'||expType==='daily'?today:''))+'">')+
+    '</div>'+
     '<div class="fg"><label class="fl">Paid From Account</label><select id="m-account">'+accOpts+'</select></div>'+
     '<div class="fg"><label class="fl">Necessity</label>'+
     '<div class="nec-toggle">'+
@@ -1742,6 +1774,37 @@ function closeBsheet(){
 }
 
 // ── RENDER ─────────────────────────────────────────────────────
+// ── EXPENSE DATE FIELD HELPER ─────────────────────────────────
+function updateExpenseDateField(expType, currentVal){
+  var dw=document.getElementById('date-wrap');
+  var dl=document.getElementById('m-date-lbl');
+  var dc=document.getElementById('m-date');
+  if(!dw)return;
+  dw.style.display='block';
+  var today=new Date().toISOString().split('T')[0];
+  if(expType==='monthly'){
+    if(dl)dl.textContent='Due Day of Month';
+    var curDay=dc?+dc.value||1:1;
+    var days=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31];
+    if(dc)dc.outerHTML='<select id="m-date">'+days.map(function(d){return '<option value="'+d+'"'+(d===(curDay||1)?' selected':'')+'>Day '+d+'</option>';}).join('')+'</select>';
+  }else if(expType==='weekly'){
+    if(dl)dl.textContent='Due Day of Week';
+    var curDow=dc?+dc.value||1:1;
+    var dayNames=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    if(dc)dc.outerHTML='<select id="m-date">'+dayNames.map(function(d,i){return '<option value="'+i+'"'+(i===(curDow||1)?' selected':'')+ '>'+d+'</option>';}).join('')+'</select>';
+  }else if(expType==='once'){
+    if(dl)dl.textContent='Date';
+    if(dc&&dc.tagName==='SELECT')dc.outerHTML='<input id="m-date" type="date" value="'+(currentVal||today)+'">';
+    else if(dc&&!dc.value)dc.value=today;
+  }else if(expType==='daily'){
+    if(dl)dl.textContent='Entry Date';
+    if(dc&&dc.tagName==='SELECT')dc.outerHTML='<input id="m-date" type="date" value="'+(currentVal||today)+'">';
+    else if(dc&&!dc.value)dc.value=today;
+  }else{
+    dw.style.display='none';
+  }
+}
+
 var VIEWS={dashboard:renderDashboard,accounts:renderAccounts,cards:renderCards,expenses:renderExpenses,income:renderIncome,investments:renderInvestments,tasks:renderTasks,calendar:renderCalendar,reports:renderReports,settings:renderSettings,categories:renderCategories,ledger:renderLedger};
 
 function render(){
@@ -1805,10 +1868,7 @@ document.addEventListener('click',function(e){
         openModal(renderExpenseModal(null));
         var tp=document.getElementById('m-type');
         if(tp)tp.addEventListener('change',function(){
-          var dw=document.getElementById('date-wrap');
-          var dl=document.getElementById('m-date-lbl');
-          if(dw){dw.style.display=(this.value==='once'||this.value==='daily')?'block':'none';}
-          if(dl){dl.textContent=this.value==='daily'?'Entry Date':'Date';}
+          updateExpenseDateField(this.value,null);
         });
       }
       else if(mt==='income')openModal(renderIncomeModal(null));
@@ -1822,8 +1882,7 @@ document.addEventListener('click',function(e){
         openModal(renderExpenseModal(prefilledExp));
         var tp=document.getElementById('m-type');
         if(tp)tp.addEventListener('change',function(){
-          var dw=document.getElementById('date-wrap');
-          if(dw)dw.style.display=(this.value==='once'||this.value==='daily')?'block':'none';
+          updateExpenseDateField(this.value,null);
         });
       }
       break;
@@ -1861,8 +1920,7 @@ document.addEventListener('click',function(e){
         openModal(renderExpenseModal(eitem));
         var tp2=document.getElementById('m-type');
         if(tp2)tp2.addEventListener('change',function(){
-          var dw=document.getElementById('date-wrap');
-          if(dw)dw.style.display=(this.value==='once'||this.value==='daily')?'block':'none';
+          updateExpenseDateField(this.value,null);
         });
       }
       else if(ekey==='income')openModal(renderIncomeModal(eitem));
@@ -1909,8 +1967,8 @@ document.addEventListener('click',function(e){
       var mn3=document.getElementById('m-nec');
       var necVal=mn3?mn3.value:'need';
       var expType=tp3?tp3.value:'monthly';
-      // Only keep date for types that use it; clear for monthly/weekly
-      var expDate=(expType==='once'||expType==='daily')?(dt?dt.value:''):'';
+      // Keep date for all types (monthly=day number, weekly=weekday, once/daily=full date)
+      var expDate=dt?dt.value:'';
       var accId3=macc3&&macc3.value?macc3.value:'';
       var expData={name:nm.value.trim(),amount:am.value,cat:ct?ct.value:'Other',type:expType,date:expDate,currency:mc3?mc3.value:(app.data.settings.currency||'AED'),necessity:necVal,accountId:accId3};
       // If expense has account + today's date: deduct from account balance
