@@ -423,7 +423,7 @@ function migrateData(d){
   ['accounts','cards','expenses','income','investments','tasks','ledger'].forEach(function(k){
     if(!Array.isArray(d[k]))d[k]=[];
   });
-  d.income.forEach(function(i){if(i.date===undefined)i.date='';});
+  d.income.forEach(function(i){if(i.date===undefined)i.date='';if(i.accountId===undefined)i.accountId='';if(i.lastIncPaid===undefined)i.lastIncPaid='';});
   var base=d.settings.currency;
   ['accounts','cards','expenses','income','investments'].forEach(function(k){
     d[k].forEach(function(item){if(!item.currency)item.currency=base;});
@@ -958,11 +958,19 @@ function renderIncome(){
     var incDateBadge='';
     if(i.date&&i.freq==='monthly')incDateBadge='<span class="badge badge-m">Day '+esc(i.date)+'</span>';
     else if(i.date&&i.freq==='weekly')incDateBadge='<span class="badge badge-m">Every '+(['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][+i.date]||'')+'</span>';
-    h+='<div style="display:flex;gap:4px;flex-wrap:wrap"><span class="badge '+(i.recurring?'badge-g':'badge-m')+'">'+(i.recurring?'Recurring':'One-time')+'</span><span class="badge badge-m">'+esc(i.freq)+'</span>'+incDateBadge+curBadge(icur)+'</div></div>';
+    var incAcc=i.accountId?d.accounts.find(function(a){return a.id===i.accountId;}):null;
+    var incAccBadge=incAcc?'<span class="badge badge-b" style="font-size:9px">🏦 '+esc(incAcc.name)+'</span>':'';
+    h+='<div style="display:flex;gap:4px;flex-wrap:wrap"><span class="badge '+(i.recurring?'badge-g':'badge-m')+'">'+(i.recurring?'Recurring':'One-time')+'</span><span class="badge badge-m">'+esc(i.freq)+'</span>'+incDateBadge+incAccBadge+curBadge(icur)+'</div></div>';
     h+='<div style="text-align:right;flex-shrink:0"><div class="mono" style="font-size:14px;font-weight:700;color:var(--ac)">'+fmtf(+i.amount||0,icur)+'</div>';
     if(icur!==cur)h+='<div style="font-size:10px;color:var(--t3)">≈ '+fmtf(iBase,cur)+'</div>';
     h+='</div>';
     h+='<div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0">';
+    var thisMonthInc=new Date().toISOString().slice(0,7);
+    var incPaidNow=i.lastIncPaid&&i.lastIncPaid===thisMonthInc;
+    if(i.recurring&&i.accountId&&i.freq!=='once'){
+      if(incPaidNow){h+='<span class="badge badge-g" style="font-size:10px;padding:3px 7px">✓ '+thisMonthInc.slice(5)+'</span>';}
+      else{h+='<button class="btn btn-sm" style="background:var(--acd);color:var(--ac);border-color:transparent;font-size:11px;white-space:nowrap" data-action="receive-income" data-id="'+i.id+'">+ Receive</button>';}
+    }
     h+='<button class="btn btn-edit btn-icon btn-sm" data-action="edit-item" data-key="income" data-id="'+i.id+'" aria-label="Edit">'+ico('edit',11)+'</button>';
     h+='<button class="btn btn-danger btn-icon btn-sm" data-action="rem-item" aria-label="Remove" data-key="income" data-id="'+i.id+'">'+ico('trash',12)+'</button>';
     h+='</div></div>';
@@ -1406,6 +1414,10 @@ function renderIncomeModal(item){
       ('<select id="m-inc-date">'+ ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map(function(d,i){return '<option value="'+i+'"'+(incDate!==''&&+incDate===i?' selected':((!incDate||incDate==='')&&i===1?' selected':''))+'>'+d+'</option>';}).join('')+'</select>')
     :'<input id="m-inc-date" type="date" value="'+esc(incDate||today)+'">')+
     '</div>'+
+    '<div class="fg"><label class="fl">Received Into Account</label><select id="m-inc-account">'+
+    '<option value="">None / External</option>'+
+    app.data.accounts.map(function(a){return '<option value="'+a.id+'"'+(item&&item.accountId===a.id?' selected':'')+'>🏦 '+esc(a.name)+'</option>';}).join('')+
+    '</select></div>'+
     '<div style="display:flex;align-items:center;gap:7px;margin-bottom:10px">'+
     '<input type="checkbox" id="m-rec"'+(item&&!item.recurring?'':' checked')+' style="width:auto;cursor:pointer">'+
     '<label for="m-rec" style="font-size:12px;color:var(--t2);cursor:pointer">Recurring income</label></div>'+
@@ -2006,8 +2018,26 @@ document.addEventListener('click',function(e){
       }
       else if(ekey==='tasks')openModal(renderTaskModal(eitem));
       break;}
-    case 'rem-item':
-      if(confirm('Remove this item?')){remItem(key,id);toast('Removed ✓');}break;
+    case 'rem-item':{
+      if(!confirm('Remove this item?'))break;
+      // Reverse account credit for one-time income deleted today
+      if(key==='income'){
+        var remInc=app.data.income.find(function(x){return x.id===id;});
+        if(remInc&&remInc.accountId&&remInc.freq==='once'){
+          var remIncAcc=app.data.accounts.find(function(a){return a.id===remInc.accountId;});
+          var todayRemInc=new Date().toISOString().split('T')[0];
+          if(remIncAcc&&remInc.date===todayRemInc){
+            var remIncCur=remInc.currency||(app.data.settings.currency||'AED');
+            var remIncAccCur=remIncAcc.currency||(app.data.settings.currency||'AED');
+            var remIncAmt=remIncCur===remIncAccCur?(+remInc.amount||0):toBase(+remInc.amount||0,remIncCur)/(app.data.settings.rates[remIncAccCur]||1);
+            app.data.accounts=app.data.accounts.map(function(a){
+              return a.id===remInc.accountId?Object.assign({},a,{balance:String(Math.max(0,(+a.balance||0)-remIncAmt))}):a;
+            });
+          }
+        }
+      }
+      remItem(key,id);toast('Removed ✓');break;}
+
     case 'pick-color':
       document.querySelectorAll('#acc-colors div').forEach(function(d){d.style.border='2px solid transparent';});
       el.style.border='3px solid var(--tx)';
@@ -2087,7 +2117,23 @@ document.addEventListener('click',function(e){
       if(!sr||!sr.value.trim()||!am2||!am2.value){toast('Fill required fields','error');return;}
       var idf=document.getElementById('m-inc-date');
       var incDate2=idf?idf.value:'';
-      var incData={source:sr.value.trim(),amount:am2.value,freq:fr?fr.value:'monthly',recurring:rc&&rc.checked?'1':'',currency:mc4?mc4.value:(app.data.settings.currency||'AED'),date:incDate2};
+      var mia=document.getElementById('m-inc-account');
+      var incData={source:sr.value.trim(),amount:am2.value,freq:fr?fr.value:'monthly',recurring:rc&&rc.checked?'1':'',currency:mc4?mc4.value:(app.data.settings.currency||'AED'),date:incDate2,accountId:mia&&mia.value?mia.value:''};
+      // Credit account for one-time income with today's date
+      var incAccId=mia&&mia.value?mia.value:'';
+      var incFreqVal=fr?fr.value:'monthly';
+      var todayInc=new Date().toISOString().split('T')[0];
+      if(incFreqVal==='once'&&incDate2===todayInc&&incAccId&&!app._editId){
+        var incAccObj=app.data.accounts.find(function(a){return a.id===incAccId;});
+        if(incAccObj){
+          var incCurVal=mc4?mc4.value:(app.data.settings.currency||'AED');
+          var incAccCur=incAccObj.currency||(app.data.settings.currency||'AED');
+          var incCreditAmt=incCurVal===incAccCur?(+am2.value||0):toBase(+am2.value||0,incCurVal)/(app.data.settings.rates[incAccCur]||1);
+          app.data.accounts=app.data.accounts.map(function(a){
+            return a.id===incAccId?Object.assign({},a,{balance:String((+a.balance||0)+incCreditAmt)}):a;
+          });
+        }
+      }
       closeModal();
       if(app._editId&&app._editKey==='income'){updItem('income',app._editId,incData);app._editId=null;app._editKey=null;toast('Income updated ✓');}else{addItem('income',incData);toast('Income added ✓');}
       break;}
@@ -2140,6 +2186,28 @@ document.addEventListener('click',function(e){
       closeModal();
       if(app._editId&&app._editKey==='investments'){updItem('investments',app._editId,invData);app._editId=null;app._editKey=null;toast('Investment updated ✓');}else{addItem('investments',invData);toast('Investment added ✓');}
       break;}
+    case 'receive-income':{
+      var recInc=app.data.income.find(function(x){return x.id===id;});
+      if(!recInc){toast('Income not found','error');break;}
+      if(!recInc.accountId){toast('No linked account','error');break;}
+      var recAcc=app.data.accounts.find(function(a){return a.id===recInc.accountId;});
+      if(!recAcc){toast('Linked account not found','error');break;}
+      var thisMonthRec=new Date().toISOString().slice(0,7);
+      if(recInc.lastIncPaid===thisMonthRec){toast('Already received this month','warn');break;}
+      var recAmt=+recInc.amount||0;
+      var recCur=recInc.currency||(app.data.settings.currency||'AED');
+      var recAccCur=recAcc.currency||(app.data.settings.currency||'AED');
+      var recCredit=recCur===recAccCur?recAmt:toBase(recAmt,recCur)/(app.data.settings.rates[recAccCur]||1);
+      app.data.accounts=app.data.accounts.map(function(a){
+        return a.id===recInc.accountId?Object.assign({},a,{balance:String((+a.balance||0)+recCredit)}):a;
+      });
+      app.data.income=app.data.income.map(function(x){
+        return x.id===id?Object.assign({},x,{lastIncPaid:thisMonthRec}):x;
+      });
+      saveData();render();
+      toast(fmtf(recAmt,recCur)+' credited to '+esc(recAcc.name)+' ✓');
+      break;}
+
     case 'pay-sip':{
       var sipInv=app.data.investments.find(function(x){return x.id===id;});
       if(!sipInv){toast('Investment not found','error');break;}
