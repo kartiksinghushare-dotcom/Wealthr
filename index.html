@@ -423,6 +423,7 @@ function migrateData(d){
   ['accounts','cards','expenses','income','investments','tasks','ledger'].forEach(function(k){
     if(!Array.isArray(d[k]))d[k]=[];
   });
+  d.income.forEach(function(i){if(i.date===undefined)i.date='';});
   var base=d.settings.currency;
   ['accounts','cards','expenses','income','investments'].forEach(function(k){
     d[k].forEach(function(item){if(!item.currency)item.currency=base;});
@@ -430,11 +431,16 @@ function migrateData(d){
   d.expenses.forEach(function(e){
     if(!e.necessity)e.necessity='need';
     if(!e.accountId)e.accountId='';
+    if(!e.paymentType){e.paymentType=e.accountId?'account':'';e.paymentId=e.accountId||'';}
     // Legacy: if monthly/weekly has a full YYYY-MM-DD date, extract day number
     if(e.type==='monthly'&&e.date&&e.date.length>2){
       try{var _dp=e.date.split('-');e.date=String(parseInt(_dp[2]));}catch(_e){e.date='1';}
     }
     if(e.type==='weekly'&&e.date&&e.date.length>2){e.date='1';} // default Monday
+  });
+  d.investments.forEach(function(i){
+    if(i.sipDay===undefined)i.sipDay='';
+    if(i.lastSipPaid===undefined)i.lastSipPaid='';
   });
   return d;
 }
@@ -580,15 +586,17 @@ function buildCalendarEvents(mo,yr){
     ev[day].push(ev_);
   }
 
-  // Monthly income — shown on day 1
+  // Monthly income — shown on stored day (default 1)
   d.income.filter(function(i){return i.recurring&&i.freq==='monthly';}).forEach(function(i){
-    addEv(1,{type:'income',label:esc(i.source),amount:toBase(+i.amount||0,i.currency),currency:cur,color:'var(--ac)'});
+    var incDay=i.date?Math.min(parseInt(i.date)||1,new Date(yr,mo+1,0).getDate()):1;
+    addEv(incDay,{type:'income',label:esc(i.source),amount:toBase(+i.amount||0,i.currency),currency:cur,color:'var(--ac)'});
   });
 
-  // Weekly income — shown every Monday (day that falls on Monday in this month)
+  // Weekly income — shown on stored weekday (default Monday)
   d.income.filter(function(i){return i.recurring&&i.freq==='weekly';}).forEach(function(i){
+    var incDow=i.date!==undefined&&i.date!==''?+i.date:1;
     for(var dd=1;dd<=new Date(yr,mo+1,0).getDate();dd++){
-      if(new Date(yr,mo,dd).getDay()===1){
+      if(new Date(yr,mo,dd).getDay()===incDow){
         addEv(dd,{type:'income',label:esc(i.source)+' (weekly)',amount:toBase(+i.amount||0,i.currency),currency:cur,color:'var(--ac)'});
       }
     }
@@ -667,6 +675,15 @@ function buildCalendarEvents(mo,yr){
     }catch(ex){}
   });
 
+  // SIP/Contribution due dates
+  d.investments.filter(function(i){return +i.sip>0&&i.sipDay&&i.type!=='FD';}).forEach(function(i){
+    var sipDayNum=parseInt(i.sipDay)||1;
+    var showSipDay=Math.min(sipDayNum,new Date(yr,mo+1,0).getDate());
+    var sipMonthKey=yr+'-'+(mo+1<10?'0':'')+(mo+1);
+    var sipPaid=i.lastSipPaid&&i.lastSipPaid===sipMonthKey;
+    addEv(showSipDay,{type:'investment',label:(i.type==='Chit Fund'?'Contribution: ':'SIP: ')+esc(i.name)+(sipPaid?' (paid)':''),amount:toBase(+i.sip||0,i.currency||cur),currency:cur,color:'var(--pur)',paid:sipPaid});
+  });
+
   // Tasks with due dates
   d.tasks.filter(function(t){return t.due;}).forEach(function(t){
     try{
@@ -712,6 +729,12 @@ function renderDashboard(){
   });
   d.expenses.filter(function(e){return e.type==='once'&&e.date;}).forEach(function(e){
     try{var ed=new Date(e.date+'T12:00:00'),diff=Math.ceil((ed-now)/86400000);if(diff>=0&&diff<=60)upcoming.push({l:esc(e.name),v:toBase(+e.amount||0,e.currency),d:diff,tag:'One-time'});}catch(x){}
+  });
+  d.investments.filter(function(i){return +i.sip>0&&i.sipDay&&i.type!=='FD';}).forEach(function(i){
+    var sipDay2=parseInt(i.sipDay)||1;
+    var daysUntilSip=sipDay2>=nowDay?sipDay2-nowDay:dim-nowDay+sipDay2;
+    var paidSip=i.lastSipPaid&&i.lastSipPaid===new Date().toISOString().slice(0,7);
+    if(!paidSip)upcoming.push({l:esc(i.name),v:toBase(+i.sip||0,i.currency),d:daysUntilSip,tag:i.type==='Chit Fund'?'Contribution':'SIP'});
   });
   upcoming.sort(function(a,b){return a.d-b.d;});
   var sv=t.mi-t.me,svp=t.mi>0?Math.round(sv/t.mi*100):0;
@@ -886,10 +909,14 @@ function renderExpenses(){
     h+='<div class="item-row"><div class="icon-pill" style="background:'+cl+'22">'+ico('layers',14,cl)+'</div>';
     h+='<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;margin-bottom:2px">'+esc(e.name)+'</div>';
     var necCfg=NEC_CFG[e.necessity||'need']||NEC_CFG.need;
-    var expAcc=e.accountId?d.accounts.find(function(a){return a.id===e.accountId;}):null;
+    var expPayType=e.paymentType||( e.accountId?'account':'');
+    var expPayId=e.paymentId||e.accountId||'';
+    var expAcc=expPayType==='account'&&expPayId?d.accounts.find(function(a){return a.id===expPayId;}):null;
+    var expCard=expPayType==='card'&&expPayId?d.cards.find(function(c){return c.id===expPayId;}):null;
     h+='<div style="display:flex;gap:4px;flex-wrap:wrap">';
     h+='<span class="badge badge-m">'+esc(e.cat)+'</span><span class="badge badge-m">'+(EXP_TYPE_LBL[e.type]||e.type)+'</span><span class="badge '+necCfg.badge+'">'+necCfg.label+'</span>'+curBadge(ecur);
     if(expAcc)h+='<span class="badge badge-b" style="font-size:9px">🏦 '+esc(expAcc.name)+'</span>';
+    if(expCard)h+='<span class="badge badge-r" style="font-size:9px">💳 '+esc(expCard.nickname||expCard.bank)+'</span>';
     h+='</div></div>';
     h+='<div style="text-align:right;flex-shrink:0"><div class="mono" style="font-size:14px;font-weight:700">'+fmtf(a,ecur)+'</div>';
     if(ecur!==cur)h+='<div style="font-size:10px;color:var(--t3)">≈ '+fmtf(aBase,cur)+'</div>';
@@ -928,7 +955,10 @@ function renderIncome(){
     var icur=i.currency||cur,iBase=toBase(+i.amount||0,icur);
     h+='<div class="item-row"><div class="icon-pill" style="background:var(--acd)">'+ico('down',14,'var(--ac)')+'</div>';
     h+='<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;margin-bottom:2px">'+esc(i.source)+'</div>';
-    h+='<div style="display:flex;gap:4px;flex-wrap:wrap"><span class="badge '+(i.recurring?'badge-g':'badge-m')+'">'+(i.recurring?'Recurring':'One-time')+'</span><span class="badge badge-m">'+esc(i.freq)+'</span>'+curBadge(icur)+'</div></div>';
+    var incDateBadge='';
+    if(i.date&&i.freq==='monthly')incDateBadge='<span class="badge badge-m">Day '+esc(i.date)+'</span>';
+    else if(i.date&&i.freq==='weekly')incDateBadge='<span class="badge badge-m">Every '+(['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][+i.date]||'')+'</span>';
+    h+='<div style="display:flex;gap:4px;flex-wrap:wrap"><span class="badge '+(i.recurring?'badge-g':'badge-m')+'">'+(i.recurring?'Recurring':'One-time')+'</span><span class="badge badge-m">'+esc(i.freq)+'</span>'+incDateBadge+curBadge(icur)+'</div></div>';
     h+='<div style="text-align:right;flex-shrink:0"><div class="mono" style="font-size:14px;font-weight:700;color:var(--ac)">'+fmtf(+i.amount||0,icur)+'</div>';
     if(icur!==cur)h+='<div style="font-size:10px;color:var(--t3)">≈ '+fmtf(iBase,cur)+'</div>';
     h+='</div>';
@@ -965,9 +995,16 @@ function renderInvestments(){
     h+='<div style="flex:1"><div style="font-size:13px;font-weight:700">'+esc(i.name)+'</div>';
     h+='<div style="display:flex;gap:4px;margin-top:2px;flex-wrap:wrap"><span class="badge badge-m">'+esc(i.type)+'</span>';
     if(+i.sip>0)h+='<span class="badge badge-p">'+(i.type==='Chit Fund'?'Contribution':'SIP')+' '+fmtf(+i.sip,icur)+'/mo</span>';
+    if(i.sipDay)h+='<span class="badge badge-m" style="font-size:9px">Day '+esc(i.sipDay)+'</span>';
     if(linkedAcc)h+='<span class="badge badge-b" style="font-size:9px">🏦 '+esc(linkedAcc.name)+'</span>';
     h+=curBadge(icur)+'</div></div>';
     h+='<div class="mono" style="font-size:13px;font-weight:700;color:'+(g>=0?'var(--ac)':'var(--rd)')+'">'+(g>=0?'+':'')+gpp.toFixed(1)+'%</div>';
+    var thisMonthInv=new Date().toISOString().slice(0,7);
+    var sipPaidNow=i.lastSipPaid&&i.lastSipPaid===thisMonthInv;
+    if(+i.sip>0&&i.accountId&&i.type!=='FD'){
+      if(sipPaidNow){h+='<span class="badge badge-g" style="font-size:10px;padding:4px 8px">Paid '+thisMonthInv.slice(5)+'</span>';}
+      else{h+='<button class="btn btn-sm" style="background:var(--purd);color:var(--pur);border-color:transparent;font-size:11px" data-action="pay-sip" data-id="'+i.id+'">Pay '+(i.type==='Chit Fund'?'Contribution':'SIP')+'</button>';}
+    }
     h+='<button class="btn btn-edit btn-icon btn-sm" data-action="edit-item" data-key="investments" data-id="'+i.id+'" aria-label="Edit">'+ico('edit',11)+'</button>';
     h+='<button class="btn btn-danger btn-icon btn-sm" data-action="rem-item" aria-label="Remove" data-key="investments" data-id="'+i.id+'">'+ico('trash',11)+'</button></div>';
     h+='<div class="g3">';
@@ -1043,7 +1080,7 @@ function renderCalendar(){
   var cur=d.settings.currency||'AED';
 
   // Apply filter
-  var filterTypes={'all':null,'income':'income','expense':'expense','card':'card','task':'task'};
+  var filterTypes={'all':null,'income':'income','expense':'expense','card':'card','task':'task','investment':'investment'};
   var activeType=filterTypes[app.calFil];
 
   // Get selected day events
@@ -1062,7 +1099,7 @@ function renderCalendar(){
   h+='<div class="page-body">';
   // Filter bar
   h+='<div class="cal-filter-bar">';
-  [{k:'all',l:'All Events'},{k:'income',l:'💚 Income'},{k:'expense',l:'🟡 Bills'},{k:'card',l:'❤️ Cards'},{k:'task',l:'🟣 Tasks'}].forEach(function(f){
+  [{k:'all',l:'All Events'},{k:'income',l:'💚 Income'},{k:'expense',l:'🟡 Bills'},{k:'card',l:'❤️ Cards'},{k:'task',l:'🟣 Tasks'},{k:'investment',l:'🟣 SIPs'}].forEach(function(f){
     h+='<button class="cal-filter-btn'+(app.calFil===f.k?' active':'')+'" data-action="cal-filter" data-filter="'+f.k+'">'+f.l+'</button>';
   });
   h+='</div>';
@@ -1096,7 +1133,7 @@ function renderCalendar(){
   h+='</div>';
   // Legend
   h+='<div style="display:flex;gap:14px;flex-wrap:wrap;padding-top:10px;margin-top:8px;border-top:1px solid var(--bds)">';
-  [{l:'Income',c:'var(--ac)'},{l:'Card Due',c:'var(--rd)'},{l:'Expense',c:'var(--am)'},{l:'Task',c:'var(--pur)'}].forEach(function(x){
+  [{l:'Income',c:'var(--ac)'},{l:'Card Due',c:'var(--rd)'},{l:'Expense',c:'var(--am)'},{l:'Task / SIP',c:'var(--pur)'}].forEach(function(x){
     h+='<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--t2)"><span style="width:7px;height:7px;border-radius:50%;background:'+x.c+';display:inline-block"></span>'+x.l+'</div>';
   });
   h+='</div>';
@@ -1320,7 +1357,11 @@ function renderExpenseModal(item){
   var cats=allCats().map(function(c){return '<option value="'+esc(c.name)+'"'+(item&&item.cat===c.name?' selected':'')+'>'+esc(c.name)+'</option>';}).join('');
   var nec=item?item.necessity||'need':'need';
   var expType=item?item.type||'monthly':'monthly';
-  var accOpts='<option value="">None (Cash)</option>'+app.data.accounts.map(function(a){return '<option value="'+a.id+'"'+(item&&item.accountId===a.id?' selected':'')+'>'+esc(a.name)+'</option>';}).join('');
+  // Combined account + card dropdown
+  var selPayId=item?item.paymentId||item.accountId||'':'';
+  var payOpts='<option value="">None (Cash)</option>';
+  payOpts+=app.data.accounts.map(function(a){return '<option value="acc:'+a.id+'"'+(selPayId===a.id||selPayId==='acc:'+a.id?' selected':'')+'>🏦 '+esc(a.name)+'</option>';}).join('');
+  payOpts+=app.data.cards.map(function(c){return '<option value="card:'+c.id+'"'+(selPayId==='card:'+c.id?' selected':'')+'>💳 '+esc(c.nickname||c.bank)+'</option>';}).join('');
   var today=new Date().toISOString().split('T')[0];
   return mHtml(item?'Edit Expense':'Add Expense',
     '<div class="fg"><label class="fl">Name</label><input id="m-name" placeholder="e.g. Rent, Netflix" value="'+esc(item?item.name:'')+'"></div>'+
@@ -1336,7 +1377,7 @@ function renderExpenseModal(item){
       ('<select id="m-date">'+ ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map(function(d,i){return '<option value="'+i+'"'+(item&&item.date!==''&&item.date!==undefined&&+item.date===i?' selected':((!item||item.date===undefined||item.date==='')&&i===1?' selected':''))+'>'+d+'</option>';}).join('')+'</select>')
     :'<input id="m-date" type="date" value="'+esc(item&&item.date?item.date:(expType==='once'||expType==='daily'?today:''))+'">')+
     '</div>'+
-    '<div class="fg"><label class="fl">Paid From Account</label><select id="m-account">'+accOpts+'</select></div>'+
+    '<div class="fg"><label class="fl">Charged To</label><select id="m-account">'+payOpts+'</select></div>'+
     '<div class="fg"><label class="fl">Necessity</label>'+
     '<div class="nec-toggle">'+
     '<button class="nec-btn'+(nec==='need'?' active-need':'')+'" data-action="nec-pick" data-nec="need" id="nec-need">✅ Need</button>'+
@@ -1350,11 +1391,21 @@ function renderExpenseModal(item){
 function renderIncomeModal(item){
   var base=item?item.currency:(app.data.settings.currency||'AED');
   var freq=item?item.freq||'monthly':'monthly';
+  var incDate=item?item.date||'':''
+  var today=new Date().toISOString().split('T')[0];
   return mHtml(item?'Edit Income':'Add Income',
     '<div class="fg"><label class="fl">Source</label><input id="m-source" placeholder="e.g. Monthly Salary" value="'+esc(item?item.source:'')+'"></div>'+
     '<div class="frow"><div class="fg"><label class="fl">Amount</label><input id="m-amount" type="number" placeholder="0" value="'+esc(item?item.amount:'')+'"></div>'+
     '<div class="fg"><label class="fl">Currency</label>'+curSelect('m-currency',base)+'</div></div>'+
-    '<div class="fg"><label class="fl">Frequency</label><select id="m-freq"><option value="monthly"'+(freq==='monthly'?' selected':'')+'>Monthly</option><option value="weekly"'+(freq==='weekly'?' selected':'')+'>Weekly</option><option value="once"'+(freq==='once'?' selected':'')+'>One-time</option></select></div>'+
+    '<div class="fg"><label class="fl">Frequency</label><select id="m-freq" onchange="updateIncomeDateField(this.value,null)"><option value="monthly"'+(freq==='monthly'?' selected':'')+'>Monthly</option><option value="weekly"'+(freq==='weekly'?' selected':'')+'>Weekly</option><option value="once"'+(freq==='once'?' selected':'')+'>One-time</option></select></div>'+
+    '<div class="fg" id="inc-date-wrap">'+
+    '<label class="fl" id="m-inc-date-lbl">'+(freq==='monthly'?'Received on Day':freq==='weekly'?'Received on Day':'Date')+'</label>'+
+    (freq==='monthly'?
+      ('<select id="m-inc-date">'+(function(){var o='';for(var d=1;d<=31;d++){o+='<option value="'+d+'"'+(incDate&&+incDate===d?' selected':((!incDate||incDate==='')&&d===1?' selected':''))+'>Day '+d+'</option>';}return o;})()+'</select>')
+    :freq==='weekly'?
+      ('<select id="m-inc-date">'+ ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map(function(d,i){return '<option value="'+i+'"'+(incDate!==''&&+incDate===i?' selected':((!incDate||incDate==='')&&i===1?' selected':''))+'>'+d+'</option>';}).join('')+'</select>')
+    :'<input id="m-inc-date" type="date" value="'+esc(incDate||today)+'">')+
+    '</div>'+
     '<div style="display:flex;align-items:center;gap:7px;margin-bottom:10px">'+
     '<input type="checkbox" id="m-rec"'+(item&&!item.recurring?'':' checked')+' style="width:auto;cursor:pointer">'+
     '<label for="m-rec" style="font-size:12px;color:var(--t2);cursor:pointer">Recurring income</label></div>'+
@@ -1373,7 +1424,8 @@ function renderInvestmentModal(item){
     '<div class="fg"><label class="fl">Money Deducted From Account</label><select id="m-account">'+accOpts+'</select></div>'+
     // Standard fields (Mutual Fund, Stock, Crypto, Gold)
     '<div id="inv-std-fields">'+
-    '<div class="fg"><label class="fl">Monthly SIP / Contribution</label><input id="m-std-sip" type="number" placeholder="0" value="'+(item&&item.sip||'0')+'"></div>'+
+    '<div class="frow"><div class="fg"><label class="fl">Monthly SIP / Contribution</label><input id="m-std-sip" type="number" placeholder="0" value="'+(item&&item.sip||'0')+'"></div>'+
+    '<div class="fg"><label class="fl">SIP Due Day</label><select id="m-std-sipday">'+(function(){var o='<option value="">None</option>';for(var d=1;d<=31;d++){o+='<option value="'+d+'"'+(item&&+item.sipDay===d?' selected':'')+'>Day '+d+'</option>';}return o;})()+'</select></div></div>'+
     '<div class="frow"><div class="fg"><label class="fl">Total Invested</label><input id="m-std-invested" type="number" placeholder="0" value="'+(item&&item.invested||'')+'"></div>'+
     '<div class="fg"><label class="fl">Current Value</label><input id="m-std-current" type="number" placeholder="0" value="'+(item&&item.current||'')+'"></div></div>'+
     '</div>'+
@@ -1381,6 +1433,7 @@ function renderInvestmentModal(item){
     '<div id="inv-chit-fields" style="display:none">'+
     '<div class="frow"><div class="fg"><label class="fl">Chit Value (Total)</label><input id="m-chit-value" type="number" placeholder="e.g. 500000" value="'+(item&&item.chitValue||'')+'"></div>'+
     '<div class="fg"><label class="fl">Monthly Contribution</label><input id="m-chit-sip" type="number" placeholder="e.g. 5000" value="'+(item&&item.sip||'0')+'"></div></div>'+
+    '<div class="fg"><label class="fl">Contribution Due Day</label><select id="m-chit-sipday">'+(function(){var o='<option value="">None</option>';for(var d=1;d<=31;d++){o+='<option value="'+d+'"'+(item&&+item.sipDay===d?' selected':'')+'>Day '+d+'</option>';}return o;})()+'</select></div>'+
     '<div class="frow"><div class="fg"><label class="fl">Total Paid So Far</label><input id="m-chit-invested" type="number" placeholder="0" value="'+(item&&item.invested||'')+'"></div>'+
     '<div class="fg"><label class="fl">Bid Won Amount (if any)</label><input id="m-bid-won" type="number" placeholder="0" value="'+(item&&item.bidWon||'0')+'"></div></div>'+
     '<div class="fg"><label class="fl">Dividend Saved (discount on bid)</label><input id="m-dividend" type="number" placeholder="0" value="'+(item&&item.dividend||'0')+'"></div>'+
@@ -1805,6 +1858,29 @@ function updateExpenseDateField(expType, currentVal){
   }
 }
 
+window.updateIncomeDateField=function(freq,currentVal){
+  var dw=document.getElementById('inc-date-wrap');
+  var dl=document.getElementById('m-inc-date-lbl');
+  var dc=document.getElementById('m-inc-date');
+  if(!dw)return;
+  dw.style.display='block';
+  var today=new Date().toISOString().split('T')[0];
+  if(freq==='monthly'){
+    if(dl)dl.textContent='Received on Day';
+    var curDay=dc&&dc.tagName!=='SELECT'?1:(dc?+dc.value||1:1);
+    if(dc)dc.outerHTML='<select id="m-inc-date">'+(function(){var o='';for(var d=1;d<=31;d++){o+='<option value="'+d+'"'+(d===curDay?' selected':'')+'>Day '+d+'</option>';}return o;})()+'</select>';
+  }else if(freq==='weekly'){
+    if(dl)dl.textContent='Received on Day';
+    var curDow=dc&&dc.tagName!=='SELECT'?1:(dc?+dc.value||1:1);
+    var dayNames=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    if(dc)dc.outerHTML='<select id="m-inc-date">'+dayNames.map(function(d,i){return '<option value="'+i+'"'+(i===curDow?' selected':'')+'>'+d+'</option>';}).join('')+'</select>';
+  }else{
+    if(dl)dl.textContent='Date';
+    if(dc&&dc.tagName==='SELECT')dc.outerHTML='<input id="m-inc-date" type="date" value="'+(currentVal||today)+'">';
+    else if(dc&&!dc.value)dc.value=today;
+  }
+};
+
 var VIEWS={dashboard:renderDashboard,accounts:renderAccounts,cards:renderCards,expenses:renderExpenses,income:renderIncome,investments:renderInvestments,tasks:renderTasks,calendar:renderCalendar,reports:renderReports,settings:renderSettings,categories:renderCategories,ledger:renderLedger};
 
 function render(){
@@ -1969,24 +2045,36 @@ document.addEventListener('click',function(e){
       var expType=tp3?tp3.value:'monthly';
       // Keep date for all types (monthly=day number, weekly=weekday, once/daily=full date)
       var expDate=dt?dt.value:'';
-      var accId3=macc3&&macc3.value?macc3.value:'';
-      var expData={name:nm.value.trim(),amount:am.value,cat:ct?ct.value:'Other',type:expType,date:expDate,currency:mc3?mc3.value:(app.data.settings.currency||'AED'),necessity:necVal,accountId:accId3};
-      // If expense has account + today's date: deduct from account balance
+      var payRaw=macc3&&macc3.value?macc3.value:'';
+      var payType=payRaw.indexOf('card:')===0?'card':payRaw.indexOf('acc:')===0?'account':'';
+      var payId=payRaw.indexOf(':')>=0?payRaw.split(':')[1]:payRaw;
+      var expData={name:nm.value.trim(),amount:am.value,cat:ct?ct.value:'Other',type:expType,date:expDate,currency:mc3?mc3.value:(app.data.settings.currency||'AED'),necessity:necVal,
+        accountId:payType==='account'?payId:'',
+        paymentId:payId,paymentType:payType};
       var today3=new Date().toISOString().split('T')[0];
-      if((expType==='daily'||expType==='once')&&expDate===today3&&accId3&&!app._editId){
-        var tgtAcc3=app.data.accounts.find(function(a){return a.id===accId3;});
-        if(tgtAcc3){
-          var expAmtNum=+am.value||0;
-          var expCurr=mc3?mc3.value:(app.data.settings.currency||'AED');
-          var accCurr3=tgtAcc3.currency||(app.data.settings.currency||'AED');
-          // Convert expense amount to account currency
-          var deductAmt=expCurr===accCurr3?expAmtNum:
-            toBase(expAmtNum,expCurr)/(app.data.settings.rates[accCurr3]||1);
-          var newBal3=Math.max(0,(+tgtAcc3.balance||0)-deductAmt);
-          // Direct mutation — avoid double save/render from updItem
-          app.data.accounts=app.data.accounts.map(function(a){
-            return a.id===accId3?Object.assign({},a,{balance:String(newBal3)}):a;
-          });
+      var expAmtNum=+am.value||0;
+      var expCurr=mc3?mc3.value:(app.data.settings.currency||'AED');
+      if(!app._editId){
+        if(payType==='account'&&(expType==='daily'||expType==='once')&&expDate===today3&&payId){
+          // Deduct from account balance
+          var tgtAcc3=app.data.accounts.find(function(a){return a.id===payId;});
+          if(tgtAcc3){
+            var accCurr3=tgtAcc3.currency||(app.data.settings.currency||'AED');
+            var deductAmt=expCurr===accCurr3?expAmtNum:toBase(expAmtNum,expCurr)/(app.data.settings.rates[accCurr3]||1);
+            app.data.accounts=app.data.accounts.map(function(a){
+              return a.id===payId?Object.assign({},a,{balance:String(Math.max(0,(+a.balance||0)-deductAmt))}):a;
+            });
+          }
+        }else if(payType==='card'&&payId){
+          // Add to card outstanding balance
+          var tgtCard=app.data.cards.find(function(c){return c.id===payId;});
+          if(tgtCard){
+            var cardCurr=tgtCard.currency||(app.data.settings.currency||'AED');
+            var addAmt=expCurr===cardCurr?expAmtNum:toBase(expAmtNum,expCurr)/(app.data.settings.rates[cardCurr]||1);
+            app.data.cards=app.data.cards.map(function(c){
+              return c.id===payId?Object.assign({},c,{outstanding:String((+c.outstanding||0)+addAmt)}):c;
+            });
+          }
         }
       }
       closeModal();
@@ -1997,7 +2085,9 @@ document.addEventListener('click',function(e){
       var fr=document.getElementById('m-freq'),rc=document.getElementById('m-rec');
       var mc4=document.getElementById('m-currency');
       if(!sr||!sr.value.trim()||!am2||!am2.value){toast('Fill required fields','error');return;}
-      var incData={source:sr.value.trim(),amount:am2.value,freq:fr?fr.value:'monthly',recurring:rc&&rc.checked?'1':'',currency:mc4?mc4.value:(app.data.settings.currency||'AED')};
+      var idf=document.getElementById('m-inc-date');
+      var incDate2=idf?idf.value:'';
+      var incData={source:sr.value.trim(),amount:am2.value,freq:fr?fr.value:'monthly',recurring:rc&&rc.checked?'1':'',currency:mc4?mc4.value:(app.data.settings.currency||'AED'),date:incDate2};
       closeModal();
       if(app._editId&&app._editKey==='income'){updItem('income',app._editId,incData);app._editId=null;app._editKey=null;toast('Income updated ✓');}else{addItem('income',incData);toast('Income added ✓');}
       break;}
@@ -2017,8 +2107,10 @@ document.addEventListener('click',function(e){
         var bidW=document.getElementById('m-bid-won');
         var divEl=document.getElementById('m-dividend');
         if(!chitInv||!chitInv.value){toast('Enter total paid so far','error');return;}
+        var chitSipDay=document.getElementById('m-chit-sipday');
         invData.invested=chitInv.value;
         invData.sip=chitSip?chitSip.value:'0';
+        invData.sipDay=chitSipDay&&chitSipDay.value?chitSipDay.value:'';
         invData.chitValue=chitV?chitV.value:'0';
         invData.bidWon=bidW?bidW.value:'0';
         invData.dividend=divEl?divEl.value:'0';
@@ -2039,13 +2131,39 @@ document.addEventListener('click',function(e){
         var stdCur=document.getElementById('m-std-current');
         var stdSip=document.getElementById('m-std-sip');
         if(!stdInv||!stdInv.value){toast('Enter total invested','error');return;}
+        var stdSipDay=document.getElementById('m-std-sipday');
         invData.invested=stdInv.value;
         invData.current=stdCur?stdCur.value:stdInv.value;
         invData.sip=stdSip?stdSip.value:'0';
+        invData.sipDay=stdSipDay&&stdSipDay.value?stdSipDay.value:'';
       }
       closeModal();
       if(app._editId&&app._editKey==='investments'){updItem('investments',app._editId,invData);app._editId=null;app._editKey=null;toast('Investment updated ✓');}else{addItem('investments',invData);toast('Investment added ✓');}
       break;}
+    case 'pay-sip':{
+      var sipInv=app.data.investments.find(function(x){return x.id===id;});
+      if(!sipInv){toast('Investment not found','error');break;}
+      var sipAmt=+sipInv.sip||0;
+      if(!sipAmt){toast('No SIP amount set','error');break;}
+      if(!sipInv.accountId){toast('No linked account','error');break;}
+      var sipAcc=app.data.accounts.find(function(a){return a.id===sipInv.accountId;});
+      if(!sipAcc){toast('Linked account not found','error');break;}
+      var thisMonthSip=new Date().toISOString().slice(0,7);
+      if(sipInv.lastSipPaid===thisMonthSip){toast('Already paid this month','warn');break;}
+      var sipCur=sipInv.currency||(app.data.settings.currency||'AED');
+      var sipAccCur=sipAcc.currency||(app.data.settings.currency||'AED');
+      var sipDeduct=sipCur===sipAccCur?sipAmt:toBase(sipAmt,sipCur)/(app.data.settings.rates[sipAccCur]||1);
+      app.data.accounts=app.data.accounts.map(function(a){
+        return a.id===sipInv.accountId?Object.assign({},a,{balance:String(Math.max(0,(+a.balance||0)-sipDeduct))}):a;
+      });
+      var sipNewInvested=String((+sipInv.invested||0)+sipAmt);
+      app.data.investments=app.data.investments.map(function(x){
+        return x.id===id?Object.assign({},x,{invested:sipNewInvested,lastSipPaid:thisMonthSip}):x;
+      });
+      saveData();render();
+      toast('Paid '+fmtf(sipAmt,sipCur)+' deducted from '+esc(sipAcc.name)+'  ✓');
+      break;}
+
     case 'save-task':{
       var ttl=document.getElementById('m-title'),ct2=document.getElementById('m-cat');
       var pr=document.getElementById('m-pri'),du2=document.getElementById('m-due');
