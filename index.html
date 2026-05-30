@@ -424,7 +424,7 @@ function migrateData(d){
   ['accounts','cards','expenses','income','investments','tasks','ledger'].forEach(function(k){
     if(!Array.isArray(d[k]))d[k]=[];
   });
-  d.income.forEach(function(i){if(i.date===undefined)i.date='';if(i.accountId===undefined)i.accountId='';if(i.lastIncPaid===undefined)i.lastIncPaid='';});
+  d.income.forEach(function(i){if(i.date===undefined)i.date='';if(i.accountId===undefined)i.accountId='';if(i.lastIncPaid===undefined)i.lastIncPaid='';if(i.freq==='once')i.recurring='';});
   var base=d.settings.currency;
   ['accounts','cards','expenses','income','investments'].forEach(function(k){
     d[k].forEach(function(item){if(!item.currency)item.currency=base;});
@@ -1219,7 +1219,7 @@ function renderExpenses(){
 // ── INCOME ─────────────────────────────────────────────────────
 function renderIncome(){
   var d=app.data,cur=d.settings.currency||'AED';
-  var tot=d.income.filter(function(i){return i.recurring;}).reduce(function(s,i){
+  var tot=d.income.filter(function(i){return i.recurring&&i.freq!=='once';}).reduce(function(s,i){
     var a=toBase(+i.amount||0,i.currency);
     return s+(i.freq==='weekly'?a*4.33:a);
   },0);
@@ -1708,8 +1708,10 @@ function renderIncomeModal(item){
     app.data.accounts.map(function(a){return '<option value="'+a.id+'"'+(item&&item.accountId===a.id?' selected':'')+'>🏦 '+esc(a.name)+'</option>';}).join('')+
     '</select></div>'+
     '<div style="display:flex;align-items:center;gap:7px;margin-bottom:10px">'+
-    '<input type="checkbox" id="m-rec"'+(!item||item.recurring?' checked':'')+' style="width:auto;cursor:pointer">'+
-    '<label for="m-rec" style="font-size:12px;color:var(--t2);cursor:pointer">Recurring income</label></div>'+
+    '<input type="checkbox" id="m-rec"'+(item?item.recurring?' checked':'':freq!=='once'?' checked':'')+
+    (freq==='once'?' disabled style="width:auto;cursor:not-allowed;opacity:.4"':' style="width:auto;cursor:pointer"')+'>'+
+    '<label for="m-rec" style="font-size:12px;color:var(--t2);cursor:'+(freq==='once'?'default':'pointer')+'">'+
+    (freq==='once'?'One-time income (not recurring)':'Recurring income')+'</label></div>'+
     '<div class="mf"><button class="btn btn-ghost" data-action="close-modal">Cancel</button><button class="btn btn-primary" data-action="save-income">Save</button></div>'
   );
 }
@@ -2345,6 +2347,20 @@ window.updateIncomeDateField=function(freq,currentVal){
   var dw=document.getElementById('inc-date-wrap');
   var dl=document.getElementById('m-inc-date-lbl');
   var dc=document.getElementById('m-inc-date');
+  // Update recurring checkbox: once=disabled+unchecked, others=enabled
+  var rcEl=document.getElementById('m-rec');
+  var rcLbl=rcEl?rcEl.nextElementSibling:null;
+  if(rcEl){
+    rcEl.disabled=(freq==='once');
+    rcEl.style.opacity=freq==='once'?'0.4':'1';
+    rcEl.style.cursor=freq==='once'?'not-allowed':'pointer';
+    if(freq==='once')rcEl.checked=false;
+    else rcEl.checked=true;
+  }
+  if(rcLbl){
+    rcLbl.textContent=freq==='once'?'One-time income (not recurring)':'Recurring income';
+    rcLbl.style.cursor=freq==='once'?'default':'pointer';
+  }
   if(!dw)return;
   dw.style.display='block';
   var today=new Date().toISOString().split('T')[0];
@@ -2605,7 +2621,10 @@ document.addEventListener('click',function(e){
       var idf=document.getElementById('m-inc-date');
       var incDate2=idf?idf.value:'';
       var mia=document.getElementById('m-inc-account');
-      var incData={source:sr.value.trim(),amount:am2.value,freq:fr?fr.value:'monthly',recurring:rc&&rc.checked?'1':'',currency:mc4?mc4.value:(app.data.settings.currency||'AED'),date:incDate2,accountId:mia&&mia.value?mia.value:''};
+      var incFreqSave=fr?fr.value:'monthly';
+      var incData={source:sr.value.trim(),amount:am2.value,freq:incFreqSave,
+        recurring:(incFreqSave!=='once'&&rc&&rc.checked)?'1':'',
+        currency:mc4?mc4.value:(app.data.settings.currency||'AED'),date:incDate2,accountId:mia&&mia.value?mia.value:''};
       // Credit account for one-time income with today's date
       var incAccId=mia&&mia.value?mia.value:'';
       var incFreqVal=fr?fr.value:'monthly';
