@@ -525,7 +525,7 @@ function totals(){
     var isTrackedDaily=e.type==='daily'&&e.date;
     return s+(isTrackedDaily?0:e.type==='daily'?a*30:e.type==='weekly'?a*4.33:e.type==='once'?0:a);
   },0);
-  var mi=d.income.filter(function(i){return i.recurring;}).reduce(function(s,i){
+  var mi=d.income.filter(function(i){return i.recurring&&i.freq!=='once';}).reduce(function(s,i){
     var a=toBase(+i.amount||0,i.currency);
     return s+(i.freq==='weekly'?a*4.33:a);
   },0);
@@ -549,7 +549,7 @@ function calcForecast(target){
   steps.push({label:'Starting account balance',acc:accBal,liq:liqBal,note:'Current cash in all accounts minus card debt',type:'start'});
 
   // ── Income ───────────────────────────────────────────────
-  app.data.income.filter(function(i){return i.recurring;}).forEach(function(i){
+  app.data.income.filter(function(i){return i.recurring&&i.freq!=='once';}).forEach(function(i){
     var a=toBase(+i.amount||0,i.currency);
     var cnt=i.freq==='monthly'?Math.ceil(dl/30):i.freq==='weekly'?Math.floor(dl/7):0;
     if(cnt<=0)return;
@@ -800,6 +800,17 @@ function buildCalendarEvents(mo,yr){
         addEv(dd,{type:'income',label:esc(i.source)+' (weekly)',amount:toBase(+i.amount||0,i.currency),currency:cur,color:'var(--ac)'});
       }
     }
+  });
+
+  // One-time income — shown on its specific date
+  d.income.filter(function(i){return i.freq==='once'&&i.date;}).forEach(function(i){
+    try{
+      var ip=i.date.split('-');
+      var iy=parseInt(ip[0]),im=parseInt(ip[1])-1,id2=parseInt(ip[2]);
+      if(im===mo&&iy===yr){
+        addEv(id2,{type:'income',label:esc(i.source)+' (one-time)',amount:toBase(+i.amount||0,i.currency),currency:cur,color:'var(--ac)'});
+      }
+    }catch(ex){}
   });
 
   // Credit card due dates
@@ -1697,7 +1708,7 @@ function renderIncomeModal(item){
     app.data.accounts.map(function(a){return '<option value="'+a.id+'"'+(item&&item.accountId===a.id?' selected':'')+'>🏦 '+esc(a.name)+'</option>';}).join('')+
     '</select></div>'+
     '<div style="display:flex;align-items:center;gap:7px;margin-bottom:10px">'+
-    '<input type="checkbox" id="m-rec"'+(item&&!item.recurring?'':' checked')+' style="width:auto;cursor:pointer">'+
+    '<input type="checkbox" id="m-rec"'+(!item||item.recurring?' checked':'')+' style="width:auto;cursor:pointer">'+
     '<label for="m-rec" style="font-size:12px;color:var(--t2);cursor:pointer">Recurring income</label></div>'+
     '<div class="mf"><button class="btn btn-ghost" data-action="close-modal">Cancel</button><button class="btn btn-primary" data-action="save-income">Save</button></div>'
   );
